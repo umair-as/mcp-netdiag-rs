@@ -51,7 +51,16 @@ fn run() -> Result<(), ClientError> {
     let cfg = parse_args()?;
     let mut client = McpClient::spawn(&cfg.server_path)?;
 
-    let init = client.request("initialize", json!({}))?;
+    // The rmcp SDK validates `initialize` params against the MCP schema,
+    // so `protocolVersion` / `capabilities` / `clientInfo` are required.
+    let init = client.request(
+        "initialize",
+        json!({
+            "protocolVersion": "2025-11-25",
+            "capabilities": {},
+            "clientInfo": {"name": "minimal-mcp-client", "version": "0.1.0"},
+        }),
+    )?;
     if !cfg.json_output {
         println!("initialized: {}", init["serverInfo"]["name"]);
     }
@@ -79,11 +88,11 @@ fn run() -> Result<(), ClientError> {
         );
 
         let normalized = match res {
+            // The rmcp server returns object tool results in
+            // `result.structuredContent` (the SDK's structured-result
+            // channel) rather than a `content[0].json` block.
             Ok(value) => value
-                .get("content")
-                .and_then(Value::as_array)
-                .and_then(|arr| arr.first())
-                .and_then(|entry| entry.get("json"))
+                .get("structuredContent")
                 .cloned()
                 .map(normalize_payload)
                 .unwrap_or_else(|| json!({"status": "unknown", "signal": "malformed_tool_result"})),

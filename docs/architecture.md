@@ -25,7 +25,7 @@ sequenceDiagram
     MC->>MS: tools/call(name="net.if_status", args)
     MS->>OS: ip -j -s link show dev swp3
     OS-->>MS: JSON counters/state
-    MS-->>MC: toolResult(content=json)
+    MS-->>MC: toolResult(structuredContent)
     MC-->>APP: Interface diagnostics
 
     APP->>MC: Run net.neighbors(interface="vlan20")

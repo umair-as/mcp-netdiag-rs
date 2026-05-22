@@ -2,6 +2,11 @@
 name = "mcp-netdiag-rs"
 version = "0.1.0"
 edition = "2021"
+license = "MIT OR Apache-2.0"
+# MSRV raised to 1.85 to accept rmcp 1.7's edition-2024 dependency chain
+# (rmcp is built with edition 2024 but only requires a 1.85+ compiler from
+# its consumers). Edition 2021 is retained for this crate.
+rust-version = "1.85"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -10,6 +15,12 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
+# MCP protocol layer. Default features already include `macros` (for
+# #[tool], #[tool_router], #[tool_handler]) and `server`; `transport-io`
+# is enabled for the stdio transport.
+rmcp = { version = "1.7", features = ["transport-io"] }
+schemars = "1.0"
 
 [dev-dependencies]
 assert_matches = "1"
+tempfile = "3"

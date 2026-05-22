@@ -14,7 +14,7 @@ Troubleshooting on gateway/switch devices is usually manual and command-heavy (`
 ## High-Level Architecture
 
 1. User asks a troubleshooting question in an MCP client.
-2. MCP client connects to `mcp-netdiag-rs` over JSON-RPC (`stdio`).
+2. MCP client connects to `mcp-netdiag-rs` over the MCP protocol (`stdio`).
 3. Server exposes tools via `tools/list` and executes via `tools/call`.
 4. Each tool maps to an allowlisted Linux command on the same host.
 5. Server returns structured result payloads (`status`, `signal`, `evidence`, `suggested_action`, `raw`).
@@ -40,14 +40,16 @@ Troubleshooting on gateway/switch devices is usually manual and command-heavy (`
 - Output size/line bounds
 - MCP JSON-RPC compatibility for tool workflows
 
-## MCP Methods Implemented
+## MCP Protocol Layer
 
-- `initialize`
-- `notifications/initialized`
-- `tools/list`
-- `tools/call`
+The protocol layer is the [`rmcp`](https://crates.io/crates/rmcp) SDK over its
+stdio transport. The SDK owns `initialize`, `notifications/initialized`,
+`tools/list`, `tools/call`, and the standard JSON-RPC
+parse/invalid-request/method/params errors. Tool input schemas are derived from
+typed parameter structs via `schemars`.
 
-Error handling includes standard JSON-RPC parse/invalid/method/params errors and project-specific tool errors.
+Project-specific tool errors use pinned codes: `-32010` invalid parameter,
+`-32011` command not allowed, `-32012` command execution failed.
 
 ## Tool to Command Mapping
 
@@ -58,6 +60,20 @@ Error handling includes standard JSON-RPC parse/invalid/method/params errors and
 - `net.ping` -> `ping -n -c <1..10> -W <1..5> <target>`
 - `net.traceroute` -> `traceroute -n -m <1..30> <target>`
 - `net.logs` -> `journalctl --no-pager --output=short-iso -n <1..200> [-u <unit>]`
+
+## Configuration
+
+Environment variables:
+
+- `NETDIAG_JOURNAL` — path to the JSONL tool-call audit journal (default
+  `/tmp/mcp-netdiag-journal.jsonl`). Always-on; an unwritable path degrades to
+  a warning and the server continues without auditing.
+- `NETDIAG_ALLOWLIST` — comma-separated subset of command keys (`if_status`,
+  `mac_table`, `neighbors`, `routes`, `ping`, `traceroute`, `logs`). When set,
+  only the listed commands are runnable. This is a *narrowing* filter — it can
+  only disable built-in commands, never add programs or arguments.
+- `RUST_LOG` — `tracing` filter (default `mcp_netdiag_rs=info`); logs go to
+  stderr, never stdout.
 
 ## Deployment Model
 
