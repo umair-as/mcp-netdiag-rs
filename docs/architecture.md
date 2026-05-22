@@ -1,15 +1,15 @@
 # MCP NetDiag Architecture Flow
 
-This is the troubleshooting flow for `mcp-netdiag-rs`, modeled after your reference sequence.
+A typical troubleshooting flow with `mcp-netdiag-rs`.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant U as User
-    participant APP as Our App / Orchestrator
+    participant APP as App / Orchestrator
     participant MC as MCP Client
     participant MS as mcp-netdiag-rs (MCP Server)
-    participant OS as Embedded Linux CLI
+    participant OS as Linux host CLI
 
     U->>APP: "Why can't host 10.10.20.55 reach gateway?"
     APP->>MC: Need available diagnostics tools
@@ -21,9 +21,9 @@ sequenceDiagram
 
     Note over APP,MC: Example execution plan chosen by LLM/orchestrator
 
-    APP->>MC: Run net.if_status(interface="swp3")
+    APP->>MC: Run net.if_status(interface="eth0")
     MC->>MS: tools/call(name="net.if_status", args)
-    MS->>OS: ip -j -s link show dev swp3
+    MS->>OS: ip -j -s link show dev eth0
     OS-->>MS: JSON counters/state
     MS-->>MC: toolResult(structuredContent)
     MC-->>APP: Interface diagnostics
@@ -50,7 +50,7 @@ sequenceDiagram
     MC-->>APP: Connectivity evidence
 
     APP-->>U: Diagnosis + actions
-    Note over APP,U: "Link up, no RX errors; ARP incomplete on vlan20;\nmissing route to 10.10.20.0/24 likely cause."
+    Note over APP,U: Link up, no RX errors. ARP incomplete on vlan20.<br/>Missing route to 10.10.20.0/24 is the likely cause.
 ```
 
 ## Tool-to-Command Mapping
