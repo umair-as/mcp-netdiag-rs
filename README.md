@@ -1,14 +1,18 @@
 # mcp-netdiag-rs
 
-Read-only MCP server for network diagnostics on embedded Linux (target: IoT gateway / switch platform).
+A read-only MCP server for Linux network diagnostics. It exposes a small set
+of vetted, allowlisted commands (`ip`, `bridge`, `ping`, `traceroute`,
+`journalctl`) as MCP tools, so an MCP-capable assistant can inspect a host's
+live network state without being handed a shell. It runs on any Linux host
+with the standard `iproute2` / `ping` / `traceroute` / `systemd` userspace.
 
 ## Problem It Solves
 
-Troubleshooting on gateway/switch devices is usually manual and command-heavy (`ip`, `bridge`, `ping`, `journalctl`).
-
-`mcp-netdiag-rs` provides a safe, structured diagnostics interface so an MCP-capable assistant can:
-- call vetted diagnostics tools,
-- collect live network evidence from the target,
+Network troubleshooting on a Linux host is usually manual and command-heavy.
+`mcp-netdiag-rs` provides a safe, structured diagnostics interface so an
+MCP-capable assistant can:
+- call vetted diagnostic tools,
+- collect live network evidence from the host,
 - return concise, actionable diagnosis to the operator.
 
 ## High-Level Architecture
@@ -75,14 +79,12 @@ Environment variables:
 - `RUST_LOG` — `tracing` filter (default `mcp_netdiag_rs=info`); logs go to
   stderr, never stdout.
 
-## Deployment Model
+## Deployment
 
-Target deployment is Yocto-managed `iotgw` (`aarch64`).
-
-Recommended production path:
-- package via BitBake recipe,
-- include in image/packagegroup,
-- run locally on target so diagnostics reflect real host network state.
+Run the server locally on the host you want to diagnose, so its tools reflect
+that host's real network state. It builds to a single self-contained binary —
+install it however suits the target: a distro package, a container image, or
+(for embedded Linux) a Yocto/BitBake recipe.
 
 ## Local Development
 

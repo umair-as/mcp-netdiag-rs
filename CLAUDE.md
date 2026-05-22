@@ -1,7 +1,8 @@
 # mcp-netdiag-rs — Claude Code Orientation
 
-> Stateless MCP tool server exposing read-only network diagnostics over
-> stdio. Target deployment: a Yocto-managed `aarch64` IoT gateway.
+> Stateless MCP server exposing read-only Linux network diagnostics over
+> stdio. Runs on any host with a standard iproute2 / ping / traceroute /
+> systemd userspace.
 
 The MCP protocol layer is the `rmcp` SDK over its stdio transport. The
 migration off the original hand-rolled JSON-RPC layer is complete — this

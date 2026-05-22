@@ -1,33 +1,27 @@
 # Testing Guide: minimal-mcp-client + mcp-netdiag-rs
 
-This guide is for quick validation with a colleague.
+A quick validation walkthrough for the example client against the server.
 
 ## 1. Prerequisites
 
-- Rust toolchain installed on test machine.
+- Rust toolchain installed on the test machine.
 - `mcp-netdiag-rs` source available.
-- For target-device tests: SSH access to `iotgw`.
+- For remote-host tests: SSH access to the Linux host you want to diagnose.
 
-## 2. Build Server and Client
+## 2. Build server and client
 
-From project root:
+From the repository root:
 
 ```bash
-cd /home/umair/GitRepos/ai-learning/mcp-getting-started/mcp-netdiag-rs
 cargo build --release
+cargo build --manifest-path examples/minimal-mcp-client/Cargo.toml
 ```
 
-Build client:
+## 3. Local smoke test (human-readable)
+
+From `examples/minimal-mcp-client`:
 
 ```bash
-cd examples/minimal-mcp-client
-cargo build
-```
-
-## 3. Local Smoke Test (human-readable)
-
-```bash
-cd /home/umair/GitRepos/ai-learning/mcp-getting-started/mcp-netdiag-rs/examples/minimal-mcp-client
 cargo run -- \
   --server ../../target/release/mcp-netdiag-rs \
   --question "host cannot reach gateway from vlan20" \
@@ -37,13 +31,12 @@ cargo run -- \
 
 Expected:
 - MCP handshake lines (`initialized`, `tools discovered`, `plan`).
-- Per-tool result lines with `status`/`signal`.
-- Final diagnosis summary.
+- Per-tool result lines with `status` / `signal`.
+- A final diagnosis summary.
 
-## 4. Local Smoke Test (JSON output)
+## 4. Local smoke test (JSON output)
 
 ```bash
-cd /home/umair/GitRepos/ai-learning/mcp-getting-started/mcp-netdiag-rs/examples/minimal-mcp-client
 cargo run -- \
   --server ../../target/release/mcp-netdiag-rs \
   --question "host cannot reach gateway from vlan20" \
@@ -52,8 +45,8 @@ cargo run -- \
   --json
 ```
 
-Expected:
-- One JSON document with keys: `question`, `context`, `mcp`, `results`, `diagnosis`.
+Expected: one JSON document with keys `question`, `context`, `mcp`,
+`results`, `diagnosis`.
 
 Quick parse check:
 
@@ -65,61 +58,69 @@ cargo run -- \
   --json | jq '.diagnosis'
 ```
 
-## 5. Run on iotgw (recommended real test)
+## 5. Run on a remote host (real test)
 
-### 5.1 Verify server binary exists on target
+Replace `<host>` with the SSH target of the Linux host you want to diagnose.
+
+### 5.1 Verify the server binary exists on the host
 
 ```bash
-ssh iotgw 'which mcp-netdiag-rs && file $(which mcp-netdiag-rs)'
+ssh <host> 'which mcp-netdiag-rs && file $(which mcp-netdiag-rs)'
 ```
 
-Expected: `aarch64` ELF.
+Expected: an ELF binary built for the host's architecture.
 
-### 5.2 Run one direct MCP call on target
+### 5.2 Run one direct MCP exchange on the host
+
+The server uses the rmcp SDK, which requires the `initialize` handshake
+before any `tools/call`:
 
 ```bash
-ssh iotgw "printf '%s\n' \
-'{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"net.routes\",\"arguments\":{}}}' \
+ssh <host> "printf '%s\n%s\n%s\n' \
+'{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-11-25\",\"capabilities\":{},\"clientInfo\":{\"name\":\"smoke\",\"version\":\"0\"}}}' \
+'{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}' \
+'{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"net.routes\",\"arguments\":{}}}' \
 | mcp-netdiag-rs"
 ```
 
-Expected: JSON-RPC response with `result.content[0].json`.
+Expected: a JSON-RPC response whose `result.structuredContent` carries the
+`tool` / `status` / `signal` / `evidence` envelope.
 
-### 5.3 Run minimal client against target server via SSH pipe (optional)
+### 5.3 Run the minimal client against a remote server (optional)
 
-If the client is on your laptop and server must run on `iotgw`, use an MCP relay/wrapper later. Current minimal client expects local process execution.
+The minimal client spawns the server as a local child process. To drive a
+server on a remote host, run both the client and the server on that host, or
+place an MCP relay/wrapper between them.
 
-Practical approach now:
-- run client directly on target if Rust/client binary is available there, OR
-- run both server+client on same machine for protocol validation.
+## 6. Test cases to demo
 
-## 6. Test Cases to Demo With Colleague
-
-1. L2 issue style question:
+1. L2-style question:
 ```bash
 cargo run -- --server ../../target/release/mcp-netdiag-rs --question "link flaps on vlan20" --interface vlan20 --json
 ```
 
-2. L3 issue style question:
+2. L3-style question:
 ```bash
 cargo run -- --server ../../target/release/mcp-netdiag-rs --question "cannot reach gateway" --target 10.10.20.1 --json
 ```
 
-3. Generic issue (auto mixed plan):
+3. Generic question (auto mixed plan):
 ```bash
 cargo run -- --server ../../target/release/mcp-netdiag-rs --question "network issue" --json
 ```
 
-## 7. Known Pitfalls
+## 7. Known pitfalls
 
-- `Exec format error`: wrong architecture binary on target.
-- `No such file or directory` for tool call: command missing on host (example: `traceroute` not installed).
-- `Operation not permitted`: run context lacks needed network capabilities.
-- Non-JSON-friendly output: use `--json` flag.
+- `Exec format error`: the binary was built for the wrong architecture.
+- A tool call reporting a missing command: the underlying program (e.g.
+  `traceroute`) is not installed on the host.
+- `Operation not permitted`: the run context lacks the needed network
+  capabilities.
+- Non-JSON-friendly output: pass the `--json` flag.
 
-## 8. What “Pass” Looks Like
+## 8. What "pass" looks like
 
 - Handshake succeeds (`initialize`, `tools/list`).
-- At least one `tools/call` returns structured result.
-- JSON report produced with `diagnosis.likely_domain` and per-tool entries.
-- On `iotgw`, binary is `aarch64` and executable.
+- At least one `tools/call` returns a structured result.
+- A JSON report is produced with `diagnosis.likely_domain` and per-tool
+  entries.
