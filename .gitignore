@@ -1,0 +1,4 @@
+# Match `target/` at any depth — the root crate and the example sub-crate
+# each have their own build directory.
+target/
+**/*.rs.bk
