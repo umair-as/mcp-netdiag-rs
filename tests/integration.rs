@@ -14,6 +14,8 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
 use serde_json::{json, Value};
 
+use mcp_netdiag_rs::netdiag::commands::BUILTIN_COMMAND_COUNT;
+
 /// A handle to the server binary running as a child process.
 struct Server {
     child: Child,
@@ -117,10 +119,14 @@ fn end_to_end_tools_list_and_calls_over_stdio() {
     let mut server = Server::spawn(journal.path());
     handshake(&mut server);
 
-    // tools/list — all seven tools.
+    // tools/list — full diagnostic tool catalog.
     let listed = server.request("tools/list", json!({}));
     let tools = listed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 7, "all seven net.* tools must be advertised");
+    assert_eq!(
+        tools.len(),
+        BUILTIN_COMMAND_COUNT,
+        "all MCP tools must be advertised",
+    );
 
     // net.routes — real `ip route` on the host.
     let routes = server.request("tools/call", json!({"name": "net.routes", "arguments": {}}));

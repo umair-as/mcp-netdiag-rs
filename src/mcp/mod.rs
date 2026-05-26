@@ -4,7 +4,7 @@
 //!
 //! The production MCP protocol layer: an MCP server built on the `rmcp`
 //! SDK. `rmcp` owns the stdio transport and the `initialize` /
-//! `tools/list` / `tools/call` framing; all seven `net.*` tools are wired
+//! `tools/list` / `tools/call` framing; all diagnostic tools are wired
 //! here as `#[tool]` handlers.
 //!
 //! This module owns no netdiag-domain logic — command execution, the
@@ -30,12 +30,14 @@ use serde_json::Value;
 use tracing::instrument;
 
 use crate::errors::NetdiagError;
-use crate::netdiag::commands::{validate_interface, validate_ip_or_host, validate_mac};
+use crate::netdiag::commands::{
+    validate_interface, validate_ip_or_host, validate_mac, validate_unit,
+};
 use crate::netdiag::{normalize_tool_result, CommandExecutor};
 use journal::{JournalEntry, JournalWriter};
 
 /// rmcp-facing server. Holds the command executor and the optional audit
-/// journal, and registers the `net.*` tools with the `rmcp` SDK. Generic
+/// journal, and registers the diagnostic tools with the `rmcp` SDK. Generic
 /// over the [`CommandExecutor`] so tests can substitute a stub runner.
 pub struct NetdiagServer<R: CommandExecutor> {
     runner: Arc<R>,
@@ -140,6 +142,73 @@ impl<R: CommandExecutor> NetdiagServer<R> {
         )))
     }
 
+    /// Interface addresses (`ip -j addr show [dev <iface>]`).
+    #[tool(
+        name = "net.addr",
+        description = "Show interface addresses. Optionally restrict to one interface."
+    )]
+    #[instrument(skip(self, params))]
+    pub async fn addr(
+        &self,
+        params: Parameters<InterfaceParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Parameters(p) = params;
+        let extra = interface_args(p.interface.as_deref())?;
+        let raw = self.runner.run("addr", &extra).await?;
+        Ok(CallToolResult::structured(normalize_tool_result(
+            "net.addr", raw,
+        )))
+    }
+
+    /// Detailed link state (`ip -j -d link show [dev <iface>]`).
+    #[tool(
+        name = "net.link_detail",
+        description = "Show detailed link state. Optionally restrict to one interface."
+    )]
+    #[instrument(skip(self, params))]
+    pub async fn link_detail(
+        &self,
+        params: Parameters<InterfaceParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Parameters(p) = params;
+        let extra = interface_args(p.interface.as_deref())?;
+        let raw = self.runner.run("link_detail", &extra).await?;
+        Ok(CallToolResult::structured(normalize_tool_result(
+            "net.link_detail",
+            raw,
+        )))
+    }
+
+    /// Route lookup for a specific target (`ip -j route get <target>`).
+    #[tool(
+        name = "net.route_get",
+        description = "Resolve the route the kernel would use for a target host."
+    )]
+    #[instrument(skip(self, params))]
+    pub async fn route_get(
+        &self,
+        params: Parameters<TargetParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Parameters(p) = params;
+        validate_ip_or_host(&p.target)?;
+        let raw = self.runner.run("route_get", &[p.target]).await?;
+        Ok(CallToolResult::structured(normalize_tool_result(
+            "net.route_get",
+            raw,
+        )))
+    }
+
+    /// Policy routing rules (`ip -j rule show`).
+    #[tool(name = "net.rules", description = "Show policy routing rules.")]
+    #[instrument(skip(self))]
+    pub async fn rules(&self) -> Result<CallToolResult, McpError> {
+        let raw = self.runner.run("rules", &[]).await?;
+        Ok(CallToolResult::structured(normalize_tool_result(
+            "net.rules",
+            raw,
+        )))
+    }
+
     /// Bounded ICMP connectivity check (`ping -n -c <count> -W <wait>`).
     #[tool(
         name = "net.ping",
@@ -185,6 +254,118 @@ impl<R: CommandExecutor> NetdiagServer<R> {
         )))
     }
 
+    /// Socket snapshot (`ss -H -tuna`).
+    #[tool(
+        name = "net.sockets",
+        description = "Show TCP/UDP socket state without process details."
+    )]
+    #[instrument(skip(self))]
+    pub async fn sockets(&self) -> Result<CallToolResult, McpError> {
+        let raw = self.runner.run("sockets", &[]).await?;
+        Ok(CallToolResult::structured(normalize_tool_result(
+            "net.sockets",
+            raw,
+        )))
+    }
+
+    /// Resolver state (`resolvectl status`).
+    #[tool(
+        name = "net.dns_status",
+        description = "Show systemd-resolved DNS state."
+    )]
+    #[instrument(skip(self))]
+    pub async fn dns_status(&self) -> Result<CallToolResult, McpError> {
+        let raw = self.runner.run("dns_status", &[]).await?;
+        Ok(CallToolResult::structured(normalize_tool_result(
+            "net.dns_status",
+            raw,
+        )))
+    }
+
+    /// Resolver configuration file (`cat /etc/resolv.conf`).
+    #[tool(
+        name = "net.resolv_conf",
+        description = "Show /etc/resolv.conf resolver configuration."
+    )]
+    #[instrument(skip(self))]
+    pub async fn resolv_conf(&self) -> Result<CallToolResult, McpError> {
+        let raw = self.runner.run("resolv_conf", &[]).await?;
+        Ok(CallToolResult::structured(normalize_tool_result(
+            "net.resolv_conf",
+            raw,
+        )))
+    }
+
+    /// NIC driver/link details (`ethtool <iface>`).
+    #[tool(
+        name = "net.ethtool",
+        description = "Show ethtool details for an interface."
+    )]
+    #[instrument(skip(self, params))]
+    pub async fn ethtool(
+        &self,
+        params: Parameters<RequiredInterfaceParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Parameters(p) = params;
+        validate_interface(&p.interface)?;
+        let raw = self.runner.run("ethtool", &[p.interface]).await?;
+        Ok(CallToolResult::structured(normalize_tool_result(
+            "net.ethtool",
+            raw,
+        )))
+    }
+
+    /// Firewall ruleset (`nft list ruleset`).
+    #[tool(name = "net.firewall", description = "Show nftables firewall ruleset.")]
+    #[instrument(skip(self))]
+    pub async fn firewall(&self) -> Result<CallToolResult, McpError> {
+        let raw = self.runner.run("firewall", &[]).await?;
+        Ok(CallToolResult::structured(normalize_tool_result(
+            "net.firewall",
+            raw,
+        )))
+    }
+
+    /// Connection tracking table (`conntrack -L`).
+    #[tool(
+        name = "net.conntrack",
+        description = "Show the connection tracking table."
+    )]
+    #[instrument(skip(self))]
+    pub async fn conntrack(&self) -> Result<CallToolResult, McpError> {
+        let raw = self.runner.run("conntrack", &[]).await?;
+        Ok(CallToolResult::structured(normalize_tool_result(
+            "net.conntrack",
+            raw,
+        )))
+    }
+
+    /// Bounded packet sample (`tcpdump -nn -i <iface> -c <count>`).
+    #[tool(
+        name = "net.tcpdump_sample",
+        description = "Capture a bounded packet sample on one interface."
+    )]
+    #[instrument(skip(self, params))]
+    pub async fn tcpdump_sample(
+        &self,
+        params: Parameters<TcpdumpParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Parameters(p) = params;
+        validate_interface(&p.interface)?;
+        let count = bounded(p.count, "count", 1, 50)?.unwrap_or(10);
+        let extra = vec![
+            "-i".to_string(),
+            p.interface,
+            "-c".to_string(),
+            count.to_string(),
+        ];
+        let raw = self.runner.run("tcpdump_sample", &extra).await?;
+        Ok(CallToolResult::structured(normalize_tool_result(
+            "net.tcpdump_sample",
+            raw,
+        )))
+    }
+
     /// Recent system logs (`journalctl -n <lines> [-u <unit>]`).
     #[tool(
         name = "net.logs",
@@ -196,13 +377,92 @@ impl<R: CommandExecutor> NetdiagServer<R> {
         let lines = bounded(p.lines, "lines", 1, 200)?.unwrap_or(50);
         let mut extra = vec!["-n".to_string(), lines.to_string()];
         if let Some(unit) = p.unit.as_deref() {
-            validate_interface(unit)?;
+            validate_unit(unit)?;
             extra.push("-u".to_string());
             extra.push(unit.to_string());
         }
         let raw = self.runner.run("logs", &extra).await?;
         Ok(CallToolResult::structured(normalize_tool_result(
             "net.logs", raw,
+        )))
+    }
+
+    /// Failed systemd units (`systemctl --failed --no-pager --plain`).
+    #[tool(name = "sys.failed_units", description = "Show failed systemd units.")]
+    #[instrument(skip(self))]
+    pub async fn failed_units(&self) -> Result<CallToolResult, McpError> {
+        let raw = self.runner.run("failed_units", &[]).await?;
+        Ok(CallToolResult::structured(normalize_tool_result(
+            "sys.failed_units",
+            raw,
+        )))
+    }
+
+    /// Systemd service status (`systemctl status --no-pager --lines <n> <unit>`).
+    #[tool(
+        name = "sys.service_status",
+        description = "Show bounded systemd status for one unit."
+    )]
+    #[instrument(skip(self, params))]
+    pub async fn service_status(
+        &self,
+        params: Parameters<ServiceStatusParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Parameters(p) = params;
+        validate_unit(&p.unit)?;
+        let lines = bounded(p.lines, "lines", 1, 200)?.unwrap_or(50);
+        let extra = vec!["--lines".to_string(), lines.to_string(), p.unit];
+        let raw = self.runner.run("service_status", &extra).await?;
+        Ok(CallToolResult::structured(normalize_tool_result(
+            "sys.service_status",
+            raw,
+        )))
+    }
+
+    /// Kernel ring buffer (`dmesg -T`), bounded by output capture limits.
+    #[tool(name = "sys.dmesg", description = "Show kernel ring buffer messages.")]
+    #[instrument(skip(self))]
+    pub async fn dmesg(&self) -> Result<CallToolResult, McpError> {
+        let raw = self.runner.run("dmesg", &[]).await?;
+        Ok(CallToolResult::structured(normalize_tool_result(
+            "sys.dmesg",
+            raw,
+        )))
+    }
+
+    /// System uptime and load (`uptime`).
+    #[tool(name = "sys.uptime", description = "Show uptime and load average.")]
+    #[instrument(skip(self))]
+    pub async fn uptime(&self) -> Result<CallToolResult, McpError> {
+        let raw = self.runner.run("uptime", &[]).await?;
+        Ok(CallToolResult::structured(normalize_tool_result(
+            "sys.uptime",
+            raw,
+        )))
+    }
+
+    /// Memory summary (`free -h`).
+    #[tool(name = "sys.memory", description = "Show memory usage summary.")]
+    #[instrument(skip(self))]
+    pub async fn memory(&self) -> Result<CallToolResult, McpError> {
+        let raw = self.runner.run("memory", &[]).await?;
+        Ok(CallToolResult::structured(normalize_tool_result(
+            "sys.memory",
+            raw,
+        )))
+    }
+
+    /// Filesystem usage (`df -h`).
+    #[tool(
+        name = "sys.filesystems",
+        description = "Show filesystem usage summary."
+    )]
+    #[instrument(skip(self))]
+    pub async fn filesystems(&self) -> Result<CallToolResult, McpError> {
+        let raw = self.runner.run("filesystems", &[]).await?;
+        Ok(CallToolResult::structured(normalize_tool_result(
+            "sys.filesystems",
+            raw,
         )))
     }
 }
@@ -248,6 +508,22 @@ pub struct InterfaceParams {
     /// Restrict output to this interface; omit for all interfaces.
     #[serde(default)]
     pub interface: Option<String>,
+}
+
+/// Input for tools that require an interface name.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RequiredInterfaceParams {
+    /// Interface to inspect.
+    pub interface: String,
+}
+
+/// Input for target-scoped tools.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TargetParams {
+    /// IP address or hostname to inspect.
+    pub target: String,
 }
 
 /// Input for `net.mac_lookup`.
@@ -297,6 +573,30 @@ pub struct LogsParams {
     /// Restrict to this systemd unit; omit for all units.
     #[serde(default)]
     pub unit: Option<String>,
+}
+
+/// Input for `sys.service_status`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ServiceStatusParams {
+    /// Systemd unit to inspect.
+    pub unit: String,
+    /// Number of status log lines to include (1-200, default 50).
+    #[serde(default)]
+    #[schemars(range(min = 1, max = 200))]
+    pub lines: Option<u64>,
+}
+
+/// Input for `net.tcpdump_sample`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TcpdumpParams {
+    /// Interface to capture from.
+    pub interface: String,
+    /// Packets to capture (1-50, default 10).
+    #[serde(default)]
+    #[schemars(range(min = 1, max = 50))]
+    pub count: Option<u64>,
 }
 
 #[tool_handler(router = self.tool_router)]

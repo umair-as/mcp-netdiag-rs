@@ -2,7 +2,8 @@
 
 A read-only MCP server for Linux network diagnostics. It exposes a small set
 of vetted, allowlisted commands (`ip`, `bridge`, `ping`, `traceroute`,
-`journalctl`) as MCP tools, so an MCP-capable assistant can inspect a host's
+`journalctl`, `systemctl`, `ss`, `ethtool`, `nft`, `conntrack`, `tcpdump`,
+and small system probes) as MCP tools, so an MCP-capable assistant can inspect a host's
 live network state without being handed a shell. It runs on any Linux host
 with the standard `iproute2` / `ping` / `traceroute` / `systemd` userspace.
 
@@ -32,7 +33,10 @@ MCP-capable assistant can:
 - MAC table lookup (`net.mac_lookup`)
 - ARP/neighbor state (`net.neighbors`)
 - Routing table state (`net.routes`)
+- Address, detailed link, route lookup, and policy-rule state
 - Connectivity checks (`net.ping`, `net.traceroute`) with bounds
+- Socket, DNS, ethtool, firewall, conntrack, and bounded packet-capture probes
+- Failed unit, service status, kernel log, uptime, memory, and filesystem checks
 - Bounded log extraction (`net.logs`)
 
 ### Non-Functional Requirements
@@ -57,13 +61,49 @@ Project-specific tool errors use pinned codes: `-32010` invalid parameter,
 
 ## Tool to Command Mapping
 
+Basic diagnostics:
+
 - `net.if_status` -> `ip -j -s link show [dev <interface>]`
 - `net.mac_lookup` -> `bridge -j fdb show to <mac>`
 - `net.neighbors` -> `ip -j neigh show [dev <interface>]`
 - `net.routes` -> `ip -j route show table all`
+- `net.addr` -> `ip -j addr show [dev <interface>]`
+- `net.link_detail` -> `ip -j -d link show [dev <interface>]`
+- `net.route_get` -> `ip -j route get <target>`
+- `net.rules` -> `ip -j rule show`
 - `net.ping` -> `ping -n -c <1..10> -W <1..5> <target>`
 - `net.traceroute` -> `traceroute -n -m <1..30> <target>`
 - `net.logs` -> `journalctl --no-pager --output=short-iso -n <1..200> [-u <unit>]`
+- `sys.failed_units` -> `systemctl --failed --no-pager --plain`
+- `sys.uptime` -> `uptime`
+- `sys.memory` -> `free -h`
+- `sys.filesystems` -> `df -h`
+
+Extended diagnostics:
+
+- `net.sockets` -> `ss -H -tuna`
+- `net.dns_status` -> `resolvectl status`
+- `net.resolv_conf` -> read `/etc/resolv.conf`
+- `net.ethtool` -> `ethtool <interface>`
+- `sys.service_status` -> `systemctl status --no-pager --lines <1..200> <unit>`
+- `sys.dmesg` -> `dmesg -T`
+
+Forensics-oriented diagnostics:
+
+- `net.firewall` -> `nft list ruleset`
+- `net.conntrack` -> `conntrack -L`
+- `net.tcpdump_sample` -> `tcpdump -nn -i <interface> -c <1..50>`
+
+Some extended and forensics-oriented diagnostics require elevated privileges
+or Linux capabilities on typical systems. In particular, `net.firewall`,
+`net.conntrack`, `net.tcpdump_sample`, `sys.dmesg`, and some `net.ethtool`
+queries may return `status: "fail"` when the server process lacks the needed
+permissions. That is reported as a normal diagnostic result, not as MCP
+transport failure.
+
+`net.tcpdump_sample` waits until the requested packet count is captured or the
+server command timeout expires. On idle interfaces, prefer a small `count` and
+expect a command-timeout tool error if no packets arrive.
 
 ## Configuration
 
@@ -72,10 +112,10 @@ Environment variables:
 - `NETDIAG_JOURNAL` — path to the JSONL tool-call audit journal (default
   `/tmp/mcp-netdiag-journal.jsonl`). Always-on; an unwritable path degrades to
   a warning and the server continues without auditing.
-- `NETDIAG_ALLOWLIST` — comma-separated subset of command keys (`if_status`,
-  `mac_table`, `neighbors`, `routes`, `ping`, `traceroute`, `logs`). When set,
-  only the listed commands are runnable. This is a *narrowing* filter — it can
-  only disable built-in commands, never add programs or arguments.
+- `NETDIAG_ALLOWLIST` — comma-separated subset of built-in command keys from
+  the mapping table above. When set, only the listed commands are runnable.
+  This is a *narrowing* filter — it can only disable built-in commands, never
+  add programs or arguments.
 - `RUST_LOG` — `tracing` filter (default `mcp_netdiag_rs=info`); logs go to
   stderr, never stdout.
 

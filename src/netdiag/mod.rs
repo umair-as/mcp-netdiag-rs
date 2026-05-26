@@ -38,7 +38,7 @@ const EVIDENCE_MAX_CHARS: usize = 500;
 
 /// Shape a raw `{ok, exit_code, stdout, stderr}` command result into the
 /// stable diagnostic envelope `{tool, status, signal, evidence,
-/// suggested_action, raw}` that every `net.*` tool returns. A non-zero
+/// suggested_action, raw}` that every diagnostic tool returns. A non-zero
 /// exit is **not** an error here — it is a `status: "fail"` outcome,
 /// reported as a successful tool result (see CLAUDE.md §Error semantics).
 pub fn normalize_tool_result(tool: &str, raw: Value) -> Value {
@@ -68,12 +68,25 @@ fn signal_for(tool: &str, ok: bool) -> &'static str {
     }
     match tool {
         "net.if_status" => "interface_or_link_issue",
+        "net.addr" => "address_state_issue",
+        "net.link_detail" => "interface_or_link_issue",
         "net.mac_lookup" => "mac_table_lookup_failed",
         "net.neighbors" => "neighbor_resolution_issue",
         "net.routes" => "routing_state_issue",
+        "net.route_get" => "route_resolution_failed",
+        "net.rules" => "policy_routing_issue",
         "net.ping" => "connectivity_check_failed",
         "net.traceroute" => "path_diagnosis_failed",
+        "net.sockets" => "socket_state_failed",
+        "net.dns_status" | "net.resolv_conf" => "dns_state_failed",
+        "net.ethtool" => "interface_driver_query_failed",
+        "net.firewall" => "firewall_state_failed",
+        "net.conntrack" => "conntrack_query_failed",
+        "net.tcpdump_sample" => "packet_capture_failed",
         "net.logs" => "log_extraction_failed",
+        "sys.failed_units" | "sys.service_status" => "systemd_state_failed",
+        "sys.dmesg" => "kernel_log_failed",
+        "sys.uptime" | "sys.memory" | "sys.filesystems" => "resource_query_failed",
         _ => "diagnostic_command_failed",
     }
 }
@@ -91,11 +104,23 @@ fn suggested_action(tool: &str, ok: bool, evidence: &str) -> &'static str {
             "net.routes" => {
                 "Validate route presence, metric preference, and next-hop reachability."
             }
+            "net.dns_status" | "net.resolv_conf" => {
+                "Verify resolver configuration, DNS server reachability, and split-DNS domains."
+            }
+            "net.firewall" => "Inspect firewall tables for dropped forwarding or input traffic.",
+            "sys.service_status" | "sys.failed_units" => {
+                "Inspect the failed unit logs and dependency chain."
+            }
+            "sys.memory" | "sys.filesystems" => {
+                "Check for resource pressure before deeper network diagnosis."
+            }
             _ => "Inspect stderr and rerun with narrower scope.",
         };
     }
 
-    if tool == "net.if_status" && (evidence.contains("DOWN") || evidence.contains("NO-CARRIER")) {
+    if matches!(tool, "net.if_status" | "net.link_detail")
+        && (evidence.contains("DOWN") || evidence.contains("NO-CARRIER"))
+    {
         "Link appears down; verify physical link, transceiver, and peer port state."
     } else {
         "No immediate fault signal from this command; continue with adjacent diagnostics."
