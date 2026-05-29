@@ -153,6 +153,7 @@ pub const MAX_OUTPUT_LINES: usize = 512;
 |---|---|---|
 | `NETDIAG_JOURNAL` | JSONL tool-call audit journal path. Always-on; an unwritable path degrades to a `tracing::warn` and the server continues without auditing. | `/tmp/mcp-netdiag-journal.jsonl` |
 | `NETDIAG_ALLOWLIST` | Comma-separated subset of built-in command keys. When set, only the listed commands run. **Narrowing only** — cannot add programs/args. | unset → all enabled |
+| `NETDIAG_ENABLE_TIER2` | Opt-in for the six tier-2 tools (`ping`, `traceroute`, `tcpdump_sample`, `firewall`, `conntrack`, `dmesg`) that require elevated capabilities (CAP_NET_RAW / CAP_NET_ADMIN / CAP_SYSLOG) or emit on-wire side effects. Comma-separated subset of those keys, or the `all` sentinel, or `none` / empty / unset → every tier-2 tool refused with `-32011`. Composes with `NETDIAG_ALLOWLIST`: a tier-2 opt-in cannot widen a narrower allowlist. | unset → all tier-2 disabled |
 | `RUST_LOG` | `tracing-subscriber` env filter. | `mcp_netdiag_rs=info` |
 
 ## 7  MCP wire & framing

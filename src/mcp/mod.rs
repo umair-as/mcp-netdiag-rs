@@ -73,7 +73,13 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// Interface state and counters (`ip -j -s link show [dev <iface>]`).
     #[tool(
         name = "net.if_status",
-        description = "Show interface state and counters. Optionally restrict to one interface."
+        description = "Show interface state and counters. Optionally restrict to one interface.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     #[instrument(skip(self, params))]
     pub async fn if_status(
@@ -92,7 +98,13 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// Bridge FDB lookup for a MAC address (`bridge -j fdb show to <mac>`).
     #[tool(
         name = "net.mac_lookup",
-        description = "Look up a MAC address in the bridge forwarding database."
+        description = "Look up a MAC address in the bridge forwarding database.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     #[instrument(skip(self, params))]
     pub async fn mac_lookup(
@@ -112,7 +124,13 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// ARP / neighbor state (`ip -j neigh show [dev <iface>]`).
     #[tool(
         name = "net.neighbors",
-        description = "Show ARP/neighbor state. Optionally restrict to one interface."
+        description = "Show ARP/neighbor state. Optionally restrict to one interface.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     #[instrument(skip(self, params))]
     pub async fn neighbors(
@@ -131,7 +149,13 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// Routing table across all tables (`ip -j route show table all`).
     #[tool(
         name = "net.routes",
-        description = "Show the routing table across all routing tables."
+        description = "Show the routing table across all routing tables.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     #[instrument(skip(self))]
     pub async fn routes(&self) -> Result<CallToolResult, McpError> {
@@ -145,7 +169,13 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// Interface addresses (`ip -j addr show [dev <iface>]`).
     #[tool(
         name = "net.addr",
-        description = "Show interface addresses. Optionally restrict to one interface."
+        description = "Show interface addresses. Optionally restrict to one interface.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     #[instrument(skip(self, params))]
     pub async fn addr(
@@ -163,7 +193,13 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// Detailed link state (`ip -j -d link show [dev <iface>]`).
     #[tool(
         name = "net.link_detail",
-        description = "Show detailed link state. Optionally restrict to one interface."
+        description = "Show detailed link state. Optionally restrict to one interface.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     #[instrument(skip(self, params))]
     pub async fn link_detail(
@@ -182,7 +218,13 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// Route lookup for a specific target (`ip -j route get <target>`).
     #[tool(
         name = "net.route_get",
-        description = "Resolve the route the kernel would use for a target host."
+        description = "Resolve the route the kernel would use for a target host.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     #[instrument(skip(self, params))]
     pub async fn route_get(
@@ -199,7 +241,16 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     }
 
     /// Policy routing rules (`ip -j rule show`).
-    #[tool(name = "net.rules", description = "Show policy routing rules.")]
+    #[tool(
+        name = "net.rules",
+        description = "Show policy routing rules.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
     #[instrument(skip(self))]
     pub async fn rules(&self) -> Result<CallToolResult, McpError> {
         let raw = self.runner.run("rules", &[]).await?;
@@ -212,7 +263,13 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// Bounded ICMP connectivity check (`ping -n -c <count> -W <wait>`).
     #[tool(
         name = "net.ping",
-        description = "Bounded ping connectivity check against a target host."
+        description = "[Tier-2: CAP_NET_RAW] Bounded ping connectivity check against a target host.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true,
+        )
     )]
     #[instrument(skip(self, params))]
     pub async fn ping(&self, params: Parameters<PingParams>) -> Result<CallToolResult, McpError> {
@@ -236,7 +293,13 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// Bounded path diagnosis (`traceroute -n -m <max_hops> <target>`).
     #[tool(
         name = "net.traceroute",
-        description = "Bounded traceroute path diagnosis to a target host."
+        description = "[Tier-2: CAP_NET_RAW] Bounded traceroute path diagnosis to a target host.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true,
+        )
     )]
     #[instrument(skip(self, params))]
     pub async fn traceroute(
@@ -257,7 +320,13 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// Socket snapshot (`ss -H -tuna`).
     #[tool(
         name = "net.sockets",
-        description = "Show TCP/UDP socket state without process details."
+        description = "Show TCP/UDP socket state without process details.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     #[instrument(skip(self))]
     pub async fn sockets(&self) -> Result<CallToolResult, McpError> {
@@ -271,7 +340,13 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// Resolver state (`resolvectl status`).
     #[tool(
         name = "net.dns_status",
-        description = "Show systemd-resolved DNS state."
+        description = "Show systemd-resolved DNS state.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     #[instrument(skip(self))]
     pub async fn dns_status(&self) -> Result<CallToolResult, McpError> {
@@ -285,7 +360,13 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// Resolver configuration file (`cat /etc/resolv.conf`).
     #[tool(
         name = "net.resolv_conf",
-        description = "Show /etc/resolv.conf resolver configuration."
+        description = "Show /etc/resolv.conf resolver configuration.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     #[instrument(skip(self))]
     pub async fn resolv_conf(&self) -> Result<CallToolResult, McpError> {
@@ -299,7 +380,13 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// NIC driver/link details (`ethtool <iface>`).
     #[tool(
         name = "net.ethtool",
-        description = "Show ethtool details for an interface."
+        description = "Show ethtool details for an interface.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     #[instrument(skip(self, params))]
     pub async fn ethtool(
@@ -316,7 +403,16 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     }
 
     /// Firewall ruleset (`nft list ruleset`).
-    #[tool(name = "net.firewall", description = "Show nftables firewall ruleset.")]
+    #[tool(
+        name = "net.firewall",
+        description = "[Tier-2: CAP_NET_ADMIN] Show nftables firewall ruleset.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true,
+        )
+    )]
     #[instrument(skip(self))]
     pub async fn firewall(&self) -> Result<CallToolResult, McpError> {
         let raw = self.runner.run("firewall", &[]).await?;
@@ -329,7 +425,13 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// Connection tracking table (`conntrack -L`).
     #[tool(
         name = "net.conntrack",
-        description = "Show the connection tracking table."
+        description = "[Tier-2: CAP_NET_ADMIN] Show the connection tracking table.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true,
+        )
     )]
     #[instrument(skip(self))]
     pub async fn conntrack(&self) -> Result<CallToolResult, McpError> {
@@ -343,7 +445,13 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// Bounded packet sample (`tcpdump -nn -i <iface> -c <count>`).
     #[tool(
         name = "net.tcpdump_sample",
-        description = "Capture a bounded packet sample on one interface."
+        description = "[Tier-2: CAP_NET_RAW + CAP_NET_ADMIN] Capture a bounded packet sample on one interface.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true,
+        )
     )]
     #[instrument(skip(self, params))]
     pub async fn tcpdump_sample(
@@ -369,7 +477,13 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// Recent system logs (`journalctl -n <lines> [-u <unit>]`).
     #[tool(
         name = "net.logs",
-        description = "Extract recent system log lines. Optionally restrict to one systemd unit."
+        description = "Extract recent system log lines. Optionally restrict to one systemd unit.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     #[instrument(skip(self, params))]
     pub async fn logs(&self, params: Parameters<LogsParams>) -> Result<CallToolResult, McpError> {
@@ -388,7 +502,16 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     }
 
     /// Failed systemd units (`systemctl --failed --no-pager --plain`).
-    #[tool(name = "sys.failed_units", description = "Show failed systemd units.")]
+    #[tool(
+        name = "sys.failed_units",
+        description = "Show failed systemd units.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
     #[instrument(skip(self))]
     pub async fn failed_units(&self) -> Result<CallToolResult, McpError> {
         let raw = self.runner.run("failed_units", &[]).await?;
@@ -401,7 +524,13 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// Systemd service status (`systemctl status --no-pager --lines <n> <unit>`).
     #[tool(
         name = "sys.service_status",
-        description = "Show bounded systemd status for one unit."
+        description = "Show bounded systemd status for one unit.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     #[instrument(skip(self, params))]
     pub async fn service_status(
@@ -420,7 +549,16 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     }
 
     /// Kernel ring buffer (`dmesg -T`), bounded by output capture limits.
-    #[tool(name = "sys.dmesg", description = "Show kernel ring buffer messages.")]
+    #[tool(
+        name = "sys.dmesg",
+        description = "[Tier-2: CAP_SYSLOG] Show kernel ring buffer messages.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = true,
+        )
+    )]
     #[instrument(skip(self))]
     pub async fn dmesg(&self) -> Result<CallToolResult, McpError> {
         let raw = self.runner.run("dmesg", &[]).await?;
@@ -431,7 +569,16 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     }
 
     /// System uptime and load (`uptime`).
-    #[tool(name = "sys.uptime", description = "Show uptime and load average.")]
+    #[tool(
+        name = "sys.uptime",
+        description = "Show uptime and load average.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
     #[instrument(skip(self))]
     pub async fn uptime(&self) -> Result<CallToolResult, McpError> {
         let raw = self.runner.run("uptime", &[]).await?;
@@ -442,7 +589,16 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     }
 
     /// Memory summary (`free -h`).
-    #[tool(name = "sys.memory", description = "Show memory usage summary.")]
+    #[tool(
+        name = "sys.memory",
+        description = "Show memory usage summary.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
+    )]
     #[instrument(skip(self))]
     pub async fn memory(&self) -> Result<CallToolResult, McpError> {
         let raw = self.runner.run("memory", &[]).await?;
@@ -455,7 +611,13 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// Filesystem usage (`df -h`).
     #[tool(
         name = "sys.filesystems",
-        description = "Show filesystem usage summary."
+        description = "Show filesystem usage summary.",
+        annotations(
+            read_only_hint = true,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false,
+        )
     )]
     #[instrument(skip(self))]
     pub async fn filesystems(&self) -> Result<CallToolResult, McpError> {

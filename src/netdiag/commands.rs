@@ -39,11 +39,26 @@ enum DiagnosticSpec {
     File { path: &'static str },
 }
 
+/// The six tier-2 command keys: tools that require elevated Linux
+/// capabilities (CAP_NET_RAW / CAP_NET_ADMIN / CAP_SYSLOG) or that emit
+/// observable side effects on the wire / kernel. Refused by default; the
+/// operator opts in via `NETDIAG_ENABLE_TIER2` (see
+/// [`crate::config::TIER2_ENABLE_ENV`]).
+pub const TIER2_KEYS: &[&str] = &[
+    "ping",
+    "traceroute",
+    "tcpdump_sample",
+    "firewall",
+    "conntrack",
+    "dmesg",
+];
+
 /// Resolves logical command keys to allowlisted [`CommandSpec`]s and runs
 /// them with a wall-clock timeout and bounded output capture.
 #[derive(Debug, Clone)]
 pub struct CommandRunner {
     allowlist: HashMap<&'static str, DiagnosticSpec>,
+    tier2_enabled: HashSet<String>,
     timeout: Duration,
 }
 
@@ -231,24 +246,46 @@ fn full_allowlist() -> HashMap<&'static str, DiagnosticSpec> {
 }
 
 impl CommandRunner {
-    /// Build a runner, applying the `NETDIAG_ALLOWLIST` narrowing filter
-    /// from the environment (see [`crate::config::enabled_commands`]).
+    /// Build a runner, applying both env-var-driven filters from the
+    /// process environment at construction time:
+    /// - `NETDIAG_ALLOWLIST` narrows the built-in command set
+    ///   ([`crate::config::enabled_commands`]).
+    /// - `NETDIAG_ENABLE_TIER2` opts in to the tier-2 tools
+    ///   ([`crate::config::tier2_enabled`]).
+    ///
+    /// Both values are captured *once* here, never re-read per call — the
+    /// runner stays stateless from the MCP request's point of view.
     pub fn new() -> Self {
-        Self::with_enabled(config::enabled_commands().as_ref())
+        let allow = config::enabled_commands();
+        let tier2 = config::tier2_enabled();
+        Self::with_layers(allow.as_ref(), &tier2)
     }
 
-    /// Build a runner with an explicit enabled-key filter — `None` enables
-    /// every built-in command, `Some(set)` keeps only the listed keys.
-    /// Production uses [`CommandRunner::new`]; this constructor exists so
-    /// tests can exercise the narrowing filter without touching the
-    /// process-global environment.
+    /// Build a runner with an explicit allowlist narrowing filter, leaving
+    /// tier-2 fully *disabled* (the default, safe choice). Production uses
+    /// [`CommandRunner::new`]; this constructor exists so tests can exercise
+    /// the narrowing filter without touching the process-global environment.
     pub fn with_enabled(enabled: Option<&HashSet<String>>) -> Self {
+        Self::with_layers(enabled, &HashSet::new())
+    }
+
+    /// Build a runner with both filters specified explicitly — used by
+    /// production [`CommandRunner::new`] and by tier-2 tests that need to
+    /// control both axes without env-var races.
+    ///
+    /// `enabled = None` keeps every built-in command runnable; `Some(set)`
+    /// narrows the allowlist to the listed keys. `tier2_enabled` is the
+    /// opt-in set in [`crate::config::TIER2_ENABLE_ENV`] form
+    /// (tool keys, or the `"all"` sentinel — see
+    /// [`crate::config::TIER2_ALL_SENTINEL`]).
+    pub fn with_layers(enabled: Option<&HashSet<String>>, tier2_enabled: &HashSet<String>) -> Self {
         let mut allowlist = full_allowlist();
         if let Some(set) = enabled {
             allowlist.retain(|key, _| set.contains(*key));
         }
         Self {
             allowlist,
+            tier2_enabled: tier2_enabled.clone(),
             timeout: config::default_timeout(),
         }
     }
@@ -330,9 +367,14 @@ impl CommandRunner {
 }
 
 impl CommandExecutor for CommandRunner {
-    /// Resolve `key` against the (possibly narrowed) allowlist and run it.
-    /// A key that is unknown *or* disabled by `NETDIAG_ALLOWLIST` yields
-    /// `CommandNotAllowed` before any process is spawned.
+    /// Resolve `key` against the (possibly narrowed) allowlist and the
+    /// tier-2 opt-in set, then run it. Refusal precedence is fixed:
+    /// 1. allowlist miss → `CommandNotAllowed` (-32011)
+    /// 2. tier-2 key not opted in → `Tier2Disabled` (-32011, distinct message)
+    ///
+    /// Both refusals return before any process is spawned. Allowlist
+    /// precedence means a tier-2 opt-in cannot widen a narrower
+    /// `NETDIAG_ALLOWLIST`.
     async fn run(&self, key: &str, extra: &[String]) -> Result<Value, NetdiagError> {
         let spec =
             self.allowlist
@@ -341,8 +383,29 @@ impl CommandExecutor for CommandRunner {
                 .ok_or_else(|| NetdiagError::CommandNotAllowed {
                     command: key.to_string(),
                 })?;
+        check_tier2(key, &self.tier2_enabled)?;
         self.run_spec(&spec, extra).await
     }
+}
+
+/// Pure tier-2 gating check: `Ok(())` if `key` is not tier-2, or if the
+/// caller's opt-in set admits it. `Err(Tier2Disabled)` otherwise. Kept
+/// side-effect-free so the gating logic is unit-testable without any
+/// runner or env-var state.
+///
+/// A `tier2_enabled` entry equal to [`crate::config::TIER2_ALL_SENTINEL`]
+/// passes every tier-2 key. Other entries are matched literally — typos
+/// and non-tier-2 names are inert because no tier-2 key matches them.
+fn check_tier2(key: &str, tier2_enabled: &HashSet<String>) -> Result<(), NetdiagError> {
+    if !TIER2_KEYS.contains(&key) {
+        return Ok(());
+    }
+    if tier2_enabled.contains(config::TIER2_ALL_SENTINEL) || tier2_enabled.contains(key) {
+        return Ok(());
+    }
+    Err(NetdiagError::Tier2Disabled {
+        key: key.to_string(),
+    })
 }
 
 /// Clip raw command output to `max_bytes` then `max_lines`, decoding with
@@ -539,5 +602,142 @@ mod tests {
         let runner = CommandRunner::with_enabled(Some(&enabled));
         let err = runner.run("logs", &[]).await.unwrap_err();
         assert!(matches!(err, NetdiagError::CommandNotAllowed { .. }));
+    }
+
+    // ---- tier-2 gating -------------------------------------------------
+
+    #[test]
+    fn tier2_keys_match_designed_set() {
+        // Regression guard: any change to TIER2_KEYS must be deliberate. The
+        // designed set is the six tools requiring CAP_* or with on-wire
+        // side effects.
+        let expected = [
+            "ping",
+            "traceroute",
+            "tcpdump_sample",
+            "firewall",
+            "conntrack",
+            "dmesg",
+        ];
+        assert_eq!(TIER2_KEYS.len(), expected.len());
+        for k in expected {
+            assert!(TIER2_KEYS.contains(&k), "missing tier-2 key: {k}");
+        }
+    }
+
+    #[test]
+    fn check_tier2_default_blocks_every_tier2_key() {
+        let empty = HashSet::new();
+        for &k in TIER2_KEYS {
+            let err = check_tier2(k, &empty).unwrap_err();
+            assert!(
+                matches!(err, NetdiagError::Tier2Disabled { ref key } if key == k),
+                "expected Tier2Disabled for {k}, got {err:?}"
+            );
+            assert_eq!(err.code(), -32011);
+        }
+    }
+
+    #[test]
+    fn check_tier2_with_all_sentinel_admits_every_tier2_key() {
+        let mut set = HashSet::new();
+        set.insert(config::TIER2_ALL_SENTINEL.to_string());
+        for &k in TIER2_KEYS {
+            assert!(check_tier2(k, &set).is_ok(), "{k} must pass under `all`");
+        }
+    }
+
+    #[test]
+    fn check_tier2_subset_admits_only_listed_keys() {
+        let set: HashSet<String> = ["ping"].iter().map(|s| s.to_string()).collect();
+        assert!(check_tier2("ping", &set).is_ok());
+        for &k in TIER2_KEYS.iter().filter(|k| **k != "ping") {
+            assert!(
+                matches!(
+                    check_tier2(k, &set),
+                    Err(NetdiagError::Tier2Disabled { .. })
+                ),
+                "{k} must still be refused when only ping is opted in"
+            );
+        }
+    }
+
+    #[test]
+    fn check_tier2_is_a_noop_for_non_tier2_keys() {
+        // Tier-1 keys must pass regardless of the opt-in set's contents.
+        let empty = HashSet::new();
+        for k in ["routes", "if_status", "logs", "uptime"] {
+            assert!(check_tier2(k, &empty).is_ok());
+        }
+    }
+
+    #[test]
+    fn check_tier2_ignores_unknown_or_non_tier2_entries_in_set() {
+        // Operator typo / pasted tier-1 keys: silently inert. They never
+        // accidentally enable a tier-2 tool because no tier-2 key matches
+        // them; tier-2 tools stay refused.
+        let set: HashSet<String> = ["bogus", "routes", "if_status"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for &k in TIER2_KEYS {
+            assert!(
+                matches!(
+                    check_tier2(k, &set),
+                    Err(NetdiagError::Tier2Disabled { .. })
+                ),
+                "{k} must stay refused when only non-tier-2 names are listed"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn runner_default_refuses_tier2_with_tier2_disabled_variant() {
+        // Default `with_enabled(None)` admits every command via the
+        // allowlist but leaves tier-2 disabled — ping is refused with the
+        // tier-2 variant (carrying the env-var hint), NOT CommandNotAllowed.
+        let runner = CommandRunner::with_enabled(None);
+        let err = runner.run("ping", &[]).await.unwrap_err();
+        assert!(
+            matches!(err, NetdiagError::Tier2Disabled { ref key } if key == "ping"),
+            "expected Tier2Disabled, got {err:?}"
+        );
+        assert!(err.to_string().contains("NETDIAG_ENABLE_TIER2"));
+    }
+
+    #[tokio::test]
+    async fn runner_tier2_all_passes_tier2_check_before_spawn() {
+        // With `all` opted in, the tier-2 check is a no-op; we don't assert
+        // the spawn outcome (the test host may not have `traceroute`
+        // installed). We only assert that the refusal we'd otherwise see
+        // does NOT come back as Tier2Disabled.
+        let tier2: HashSet<String> = [config::TIER2_ALL_SENTINEL.to_string()]
+            .into_iter()
+            .collect();
+        let runner = CommandRunner::with_layers(None, &tier2);
+        let result = runner
+            .run("traceroute", &["-m".into(), "1".into(), "127.0.0.1".into()])
+            .await;
+        if let Err(NetdiagError::Tier2Disabled { .. }) = result {
+            panic!("tier-2 gate must not fire when `all` is opted in");
+        }
+    }
+
+    #[tokio::test]
+    async fn runner_allowlist_takes_precedence_over_tier2_opt_in() {
+        // Operator narrows the allowlist to exclude `ping` but also opts
+        // every tier-2 tool in. The allowlist wins — `ping` is refused
+        // with CommandNotAllowed (the unconditional "not in allowlist"
+        // refusal), NOT Tier2Disabled.
+        let allow: HashSet<String> = ["routes"].iter().map(|s| s.to_string()).collect();
+        let tier2: HashSet<String> = [config::TIER2_ALL_SENTINEL.to_string()]
+            .into_iter()
+            .collect();
+        let runner = CommandRunner::with_layers(Some(&allow), &tier2);
+        let err = runner.run("ping", &[]).await.unwrap_err();
+        assert!(
+            matches!(err, NetdiagError::CommandNotAllowed { ref command } if command == "ping"),
+            "allowlist must refuse first; got {err:?}"
+        );
     }
 }

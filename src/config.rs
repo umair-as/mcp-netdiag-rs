@@ -4,11 +4,13 @@
 //! See CLAUDE.md §6.
 //!
 //! Hard limits stay as `pub const` so they participate in type-checking at
-//! every call site. Two items are runtime-tunable via environment variables:
+//! every call site. Three items are runtime-tunable via environment variables:
 //!
-//! - `NETDIAG_JOURNAL`   → path to the JSONL audit journal ([`journal_path`])
-//! - `NETDIAG_ALLOWLIST` → narrowing filter over the built-in command set
+//! - `NETDIAG_JOURNAL`     → path to the JSONL audit journal ([`journal_path`])
+//! - `NETDIAG_ALLOWLIST`   → narrowing filter over the built-in command set
 //!   ([`enabled_commands`])
+//! - `NETDIAG_ENABLE_TIER2` → opt-in for the six tier-2 tools that require
+//!   elevated Linux capabilities or have on-wire side effects ([`tier2_enabled`])
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -87,6 +89,53 @@ fn parse_allowlist(raw: &str) -> HashSet<String> {
         .collect()
 }
 
+/// Env var that opts in to the six tier-2 tools. Unlike [`ALLOWLIST_ENV`]
+/// which defaults *open*, this defaults *closed*: tier-2 tools (those
+/// requiring CAP_NET_RAW / CAP_NET_ADMIN / CAP_SYSLOG or that emit packets
+/// on the wire) refuse to run unless the operator explicitly enables them.
+///
+/// Accepted forms:
+/// - unset / empty / `none` → empty set (every tier-2 tool refused)
+/// - `all` (case-sensitive) → every tier-2 tool enabled
+/// - comma-separated list of tier-2 tool keys (e.g. `ping,traceroute`);
+///   unknown or non-tier-2 names are silently ignored at check time
+///
+/// Composition with [`ALLOWLIST_ENV`]: a tier-2 tool runs iff it is *also*
+/// admitted by `NETDIAG_ALLOWLIST` — the allowlist takes precedence and a
+/// tier-2 opt-in cannot widen it.
+pub const TIER2_ENABLE_ENV: &str = "NETDIAG_ENABLE_TIER2";
+
+/// Sentinel value in [`TIER2_ENABLE_ENV`] meaning "every tier-2 tool". Kept
+/// as a literal in the returned set; resolution against the tier-2 key list
+/// lives in [`crate::netdiag::commands`] so this module stays unaware of the
+/// concrete tier-2 keys.
+pub const TIER2_ALL_SENTINEL: &str = "all";
+
+/// The tier-2 opt-in set, parsed from [`TIER2_ENABLE_ENV`]. Returns an
+/// empty set (the default, "all tier-2 disabled") when the variable is
+/// unset, empty, whitespace-only, or `none`.
+pub fn tier2_enabled() -> HashSet<String> {
+    std::env::var(TIER2_ENABLE_ENV)
+        .ok()
+        .map(|raw| parse_tier2(&raw))
+        .unwrap_or_default()
+}
+
+/// Pure parser for [`TIER2_ENABLE_ENV`]. Kept side-effect-free so it can be
+/// unit tested without touching the process environment.
+fn parse_tier2(raw: &str) -> HashSet<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() || trimmed == "none" {
+        return HashSet::new();
+    }
+    trimmed
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +161,46 @@ mod tests {
     fn parse_allowlist_empty_string_is_full_lockdown() {
         assert!(parse_allowlist("").is_empty());
         assert!(parse_allowlist("   ").is_empty());
+    }
+
+    #[test]
+    fn parse_tier2_empty_or_none_is_empty_set() {
+        assert!(parse_tier2("").is_empty());
+        assert!(parse_tier2("   ").is_empty());
+        assert!(parse_tier2("none").is_empty());
+    }
+
+    #[test]
+    fn parse_tier2_all_keeps_sentinel_literal() {
+        let set = parse_tier2("all");
+        assert_eq!(set.len(), 1);
+        assert!(set.contains(TIER2_ALL_SENTINEL));
+    }
+
+    #[test]
+    fn parse_tier2_subset_returns_listed_keys_verbatim() {
+        let set = parse_tier2("ping, traceroute ,dmesg");
+        assert_eq!(set.len(), 3);
+        assert!(set.contains("ping"));
+        assert!(set.contains("traceroute"));
+        assert!(set.contains("dmesg"));
+    }
+
+    #[test]
+    fn parse_tier2_drops_empty_entries() {
+        let set = parse_tier2("ping,, ,,dmesg,");
+        assert_eq!(set.len(), 2);
+    }
+
+    #[test]
+    fn parse_tier2_does_not_validate_names() {
+        // Filtering of non-tier-2 names happens at check time (see
+        // netdiag::commands::check_tier2). The parser keeps any non-empty
+        // token, so an operator-side typo like "pign" lands in the set but
+        // is inert because no tier-2 key matches it.
+        let set = parse_tier2("ping,bogus,routes");
+        assert_eq!(set.len(), 3);
+        assert!(set.contains("bogus"));
     }
 
     #[test]

@@ -394,6 +394,222 @@ async fn disabled_command_returns_not_allowed() {
     assert_eq!(rpc_error_code(&resp), -32011);
 }
 
+// ---- tier-2 gating: wire-level --------------------------------------------
+
+/// The six tier-2 tools (mirrors `netdiag::commands::TIER2_KEYS` but lives
+/// under the dotted MCP tool names). Kept inline so the wire test asserts
+/// the operator-facing names, not the internal command keys.
+const TIER2_TOOLS: &[&str] = &[
+    "net.ping",
+    "net.traceroute",
+    "net.tcpdump_sample",
+    "net.firewall",
+    "net.conntrack",
+    "sys.dmesg",
+];
+
+#[tokio::test]
+async fn tools_list_still_advertises_tier2_when_disabled() {
+    // Disabled tier-2 tools must remain visible in tools/list — mirrors the
+    // existing NETDIAG_ALLOWLIST behavior. The refusal happens at call time.
+    let server = NetdiagServer::new(CommandRunner::with_layers(None, &HashSet::new()), None);
+    let responses = roundtrip(
+        server,
+        &[
+            init_request(),
+            initialized_notification(),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        ],
+    )
+    .await;
+    let tools = responses[1]["result"]["tools"]
+        .as_array()
+        .expect("tools array");
+    for name in TIER2_TOOLS {
+        assert!(
+            tools.iter().any(|t| t["name"] == *name),
+            "{name} must remain visible in tools/list even when disabled",
+        );
+    }
+}
+
+#[tokio::test]
+async fn tools_list_marks_tier2_in_description_and_open_world_hint() {
+    // The operator-visible tier signal: a "[Tier-2: <CAP>...]" prefix in the
+    // description, plus open_world_hint=true on the rmcp annotation.
+    let server = NetdiagServer::new(
+        CommandRunner::with_layers(
+            None,
+            &[mcp_netdiag_rs::config::TIER2_ALL_SENTINEL.to_string()]
+                .into_iter()
+                .collect(),
+        ),
+        None,
+    );
+    let responses = roundtrip(
+        server,
+        &[
+            init_request(),
+            initialized_notification(),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        ],
+    )
+    .await;
+    let tools = responses[1]["result"]["tools"]
+        .as_array()
+        .expect("tools array");
+    for name in TIER2_TOOLS {
+        let t = tools
+            .iter()
+            .find(|t| t["name"] == *name)
+            .unwrap_or_else(|| panic!("{name} listed"));
+        let desc = t["description"].as_str().unwrap_or_default();
+        assert!(
+            desc.starts_with("[Tier-2:"),
+            "{name} description must carry the tier-2 capability marker: {desc:?}",
+        );
+        assert_eq!(
+            t["annotations"]["openWorldHint"],
+            json!(true),
+            "{name} must advertise openWorldHint=true",
+        );
+        assert_eq!(t["annotations"]["readOnlyHint"], json!(true));
+        assert_eq!(t["annotations"]["destructiveHint"], json!(false));
+    }
+}
+
+#[tokio::test]
+async fn tools_list_tier1_advertises_closed_world_annotation() {
+    // Spot-check: a tier-1 tool advertises open_world_hint=false and has no
+    // tier-2 prefix in its description.
+    let server = stub_server();
+    let responses = roundtrip(
+        server,
+        &[
+            init_request(),
+            initialized_notification(),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        ],
+    )
+    .await;
+    let tools = responses[1]["result"]["tools"]
+        .as_array()
+        .expect("tools array");
+    let routes = tools
+        .iter()
+        .find(|t| t["name"] == "net.routes")
+        .expect("net.routes listed");
+    assert_eq!(routes["annotations"]["openWorldHint"], json!(false));
+    assert!(!routes["description"]
+        .as_str()
+        .unwrap_or_default()
+        .starts_with("[Tier-2:"));
+}
+
+#[tokio::test]
+async fn call_tier2_default_disabled_returns_tier2_message() {
+    // Default deployment: NETDIAG_ENABLE_TIER2 unset → empty opt-in set.
+    // Every tier-2 tool refuses with -32011, message mentions the env var.
+    for tool in TIER2_TOOLS {
+        let server = NetdiagServer::new(CommandRunner::with_layers(None, &HashSet::new()), None);
+        let args = tier2_call_args(tool);
+        let resp = handshake_then_call(server, tool, args).await;
+        assert_eq!(
+            rpc_error_code(&resp),
+            -32011,
+            "{tool} must refuse by default: {resp}",
+        );
+        let msg = resp["error"]["message"]
+            .as_str()
+            .unwrap_or_else(|| panic!("error.message missing for {tool}: {resp}"));
+        assert!(
+            msg.contains("NETDIAG_ENABLE_TIER2"),
+            "{tool} refusal must surface the env-var hint, got: {msg}",
+        );
+    }
+}
+
+#[tokio::test]
+async fn call_tier2_subset_opts_in_only_listed_tool() {
+    // NETDIAG_ENABLE_TIER2=ping (one tool) → ping passes the tier-2 gate;
+    // the other five tier-2 tools still refuse with -32011.
+    let tier2: HashSet<String> = ["ping"].iter().map(|s| s.to_string()).collect();
+
+    // ping passes the gate. The StubRunner-equivalent isn't usable here
+    // (it skips gating), so we use the real runner; ping with target
+    // 127.0.0.1 returns successfully on a Linux test host. We only assert
+    // the response is NOT a tier-2 refusal (status may be "ok" or "fail"
+    // depending on host capabilities — the call reached past the gate).
+    {
+        let server = NetdiagServer::new(CommandRunner::with_layers(None, &tier2), None);
+        let resp = handshake_then_call(
+            server,
+            "net.ping",
+            json!({"target": "127.0.0.1", "count": 1, "timeout_secs": 1}),
+        )
+        .await;
+        if let Some(err) = resp.get("error") {
+            // Only acceptable error here is a spawn/exec issue, NOT tier-2.
+            let msg = err["message"].as_str().unwrap_or_default();
+            assert!(
+                !msg.contains("NETDIAG_ENABLE_TIER2"),
+                "ping must pass tier-2 gate when opted in; got tier-2 refusal: {resp}",
+            );
+        }
+    }
+
+    // The other five tier-2 tools still refuse with tier-2 message.
+    for tool in TIER2_TOOLS.iter().filter(|t| **t != "net.ping") {
+        let server = NetdiagServer::new(CommandRunner::with_layers(None, &tier2), None);
+        let resp = handshake_then_call(server, tool, tier2_call_args(tool)).await;
+        assert_eq!(rpc_error_code(&resp), -32011, "{tool} must still refuse");
+        let msg = resp["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains("NETDIAG_ENABLE_TIER2"),
+            "{tool} refusal must keep the env-var hint",
+        );
+    }
+}
+
+#[tokio::test]
+async fn call_tier2_allowlist_precedence_returns_command_not_allowed() {
+    // NETDIAG_ALLOWLIST narrowed to exclude ping + NETDIAG_ENABLE_TIER2=all
+    // → ping still refused, but with CommandNotAllowed (no env-var hint),
+    // proving the allowlist takes precedence.
+    let allow: HashSet<String> = ["routes"].iter().map(|s| s.to_string()).collect();
+    let tier2: HashSet<String> = [mcp_netdiag_rs::config::TIER2_ALL_SENTINEL.to_string()]
+        .into_iter()
+        .collect();
+    let server = NetdiagServer::new(CommandRunner::with_layers(Some(&allow), &tier2), None);
+    let resp = handshake_then_call(
+        server,
+        "net.ping",
+        json!({"target": "127.0.0.1", "count": 1, "timeout_secs": 1}),
+    )
+    .await;
+    assert_eq!(rpc_error_code(&resp), -32011);
+    let msg = resp["error"]["message"].as_str().unwrap_or_default();
+    // CommandNotAllowed message format from errors.rs — does NOT mention
+    // the tier-2 env var (allowlist precedence proof).
+    assert!(
+        msg.contains("not allowed") && !msg.contains("NETDIAG_ENABLE_TIER2"),
+        "allowlist refusal must NOT surface tier-2 hint: {msg}",
+    );
+}
+
+/// Build the minimal valid argument payload for each tier-2 tool. Per-tool
+/// because the param structs use `deny_unknown_fields` and several tools
+/// require an `interface` / `target` argument.
+fn tier2_call_args(tool: &str) -> Value {
+    match tool {
+        "net.ping" => json!({"target": "127.0.0.1", "count": 1, "timeout_secs": 1}),
+        "net.traceroute" => json!({"target": "127.0.0.1", "max_hops": 1}),
+        "net.tcpdump_sample" => json!({"interface": "lo", "count": 1}),
+        // Paramless tools take an empty object.
+        _ => json!({}),
+    }
+}
+
 // ---- audit journal --------------------------------------------------------
 
 #[tokio::test]
