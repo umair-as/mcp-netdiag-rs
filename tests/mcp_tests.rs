@@ -433,10 +433,24 @@ async fn tools_list_still_advertises_tier2_when_disabled() {
     }
 }
 
+/// The three wire-emitting tier-2 tools. Each call emits packets on the
+/// network or toggles promiscuous mode, so they advertise
+/// `readOnlyHint = false` and `idempotentHint = false` per the MCP spec
+/// (no host config changes, but observable environmental effects exist).
+const TIER2_WIRE_EMITTERS: &[&str] = &["net.ping", "net.traceroute", "net.tcpdump_sample"];
+
+/// The three privileged-read tier-2 tools. They query local kernel state
+/// without emitting anything, so they keep `readOnlyHint = true` and
+/// `idempotentHint = true`. They are tier-2 only because of the
+/// capability requirement.
+const TIER2_PRIVILEGED_READS: &[&str] = &["net.firewall", "net.conntrack", "sys.dmesg"];
+
 #[tokio::test]
 async fn tools_list_marks_tier2_in_description_and_open_world_hint() {
-    // The operator-visible tier signal: a "[Tier-2: <CAP>...]" prefix in the
-    // description, plus open_world_hint=true on the rmcp annotation.
+    // Every tier-2 tool carries the "[Tier-2: <CAP>...]" description
+    // prefix, `openWorldHint = true`, and `destructiveHint = false`. The
+    // readOnlyHint / idempotentHint split between wire-emitters and
+    // privileged-reads is asserted in the two follow-up tests below.
     let server = NetdiagServer::new(
         CommandRunner::with_layers(
             None,
@@ -473,8 +487,93 @@ async fn tools_list_marks_tier2_in_description_and_open_world_hint() {
             json!(true),
             "{name} must advertise openWorldHint=true",
         );
-        assert_eq!(t["annotations"]["readOnlyHint"], json!(true));
         assert_eq!(t["annotations"]["destructiveHint"], json!(false));
+    }
+}
+
+#[tokio::test]
+async fn tools_list_wire_emitting_tier2_tools_flip_read_only_and_idempotent_hints() {
+    // ping / traceroute / tcpdump_sample emit packets or toggle promisc —
+    // per MCP spec, readOnlyHint and idempotentHint must be false because
+    // each call produces fresh observable effects. The decision is locked
+    // in SECURITY.md "Two-tier model"; this test is the regression guard.
+    let server = NetdiagServer::new(
+        CommandRunner::with_layers(
+            None,
+            &[mcp_netdiag_rs::config::TIER2_ALL_SENTINEL.to_string()]
+                .into_iter()
+                .collect(),
+        ),
+        None,
+    );
+    let responses = roundtrip(
+        server,
+        &[
+            init_request(),
+            initialized_notification(),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        ],
+    )
+    .await;
+    let tools = responses[1]["result"]["tools"]
+        .as_array()
+        .expect("tools array");
+    for name in TIER2_WIRE_EMITTERS {
+        let t = tools
+            .iter()
+            .find(|t| t["name"] == *name)
+            .unwrap_or_else(|| panic!("{name} listed"));
+        assert_eq!(
+            t["annotations"]["readOnlyHint"],
+            json!(false),
+            "{name} emits packets / toggles promisc — readOnlyHint must be false",
+        );
+        assert_eq!(
+            t["annotations"]["idempotentHint"],
+            json!(false),
+            "{name} produces fresh observable effects — idempotentHint must be false",
+        );
+    }
+}
+
+#[tokio::test]
+async fn tools_list_privileged_read_tier2_tools_keep_read_only_hints_true() {
+    // firewall / conntrack / dmesg are pure reads of kernel state — they
+    // are tier-2 only because they need elevated caps. The MCP-spec
+    // readOnlyHint stays true; idempotentHint stays true (consecutive
+    // calls have no additional effect on the environment).
+    let server = NetdiagServer::new(
+        CommandRunner::with_layers(
+            None,
+            &[mcp_netdiag_rs::config::TIER2_ALL_SENTINEL.to_string()]
+                .into_iter()
+                .collect(),
+        ),
+        None,
+    );
+    let responses = roundtrip(
+        server,
+        &[
+            init_request(),
+            initialized_notification(),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        ],
+    )
+    .await;
+    let tools = responses[1]["result"]["tools"]
+        .as_array()
+        .expect("tools array");
+    for name in TIER2_PRIVILEGED_READS {
+        let t = tools
+            .iter()
+            .find(|t| t["name"] == *name)
+            .unwrap_or_else(|| panic!("{name} listed"));
+        assert_eq!(
+            t["annotations"]["readOnlyHint"],
+            json!(true),
+            "{name} is a pure kernel-state read — readOnlyHint must stay true",
+        );
+        assert_eq!(t["annotations"]["idempotentHint"], json!(true));
     }
 }
 

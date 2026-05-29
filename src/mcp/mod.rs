@@ -261,13 +261,19 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     }
 
     /// Bounded ICMP connectivity check (`ping -n -c <count> -W <wait>`).
+    ///
+    /// `read_only_hint = false` / `idempotent_hint = false`: this tool
+    /// emits ICMP echo requests on the wire. Each invocation produces
+    /// fresh observable effects, so the MCP spec's "readOnly" / "idempotent"
+    /// definitions do not apply — even though no host configuration
+    /// changes. See SECURITY.md for the rationale.
     #[tool(
         name = "net.ping",
         description = "[Tier-2: CAP_NET_RAW] Bounded ping connectivity check against a target host.",
         annotations(
-            read_only_hint = true,
+            read_only_hint = false,
             destructive_hint = false,
-            idempotent_hint = true,
+            idempotent_hint = false,
             open_world_hint = true,
         )
     )]
@@ -291,13 +297,17 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     }
 
     /// Bounded path diagnosis (`traceroute -n -m <max_hops> <target>`).
+    ///
+    /// `read_only_hint = false` / `idempotent_hint = false`: emits UDP/ICMP
+    /// probes. Same rationale as `net.ping` — host config is unchanged
+    /// but the wire is touched on every call.
     #[tool(
         name = "net.traceroute",
         description = "[Tier-2: CAP_NET_RAW] Bounded traceroute path diagnosis to a target host.",
         annotations(
-            read_only_hint = true,
+            read_only_hint = false,
             destructive_hint = false,
-            idempotent_hint = true,
+            idempotent_hint = false,
             open_world_hint = true,
         )
     )]
@@ -443,13 +453,20 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     }
 
     /// Bounded packet sample (`tcpdump -nn -i <iface> -c <count>`).
+    ///
+    /// `read_only_hint = false` / `idempotent_hint = false`: tcpdump opens
+    /// an AF_PACKET socket and (without `-p`) toggles promiscuous mode on
+    /// the interface for the capture window. The promisc transition is
+    /// observable to other listeners on the link and to the kernel's
+    /// link-flag state, so this is a genuine environmental side effect.
+    /// See SECURITY.md for the rationale.
     #[tool(
         name = "net.tcpdump_sample",
         description = "[Tier-2: CAP_NET_RAW + CAP_NET_ADMIN] Capture a bounded packet sample on one interface.",
         annotations(
-            read_only_hint = true,
+            read_only_hint = false,
             destructive_hint = false,
-            idempotent_hint = true,
+            idempotent_hint = false,
             open_world_hint = true,
         )
     )]
