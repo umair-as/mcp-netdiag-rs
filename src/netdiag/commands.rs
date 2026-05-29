@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use serde_json::{json, Value};
+use tokio::fs;
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -31,11 +32,18 @@ pub struct CommandSpec {
     pub base_args: &'static [&'static str],
 }
 
+/// A pinned diagnostic operation.
+#[derive(Debug, Clone)]
+enum DiagnosticSpec {
+    Process(CommandSpec),
+    File { path: &'static str },
+}
+
 /// Resolves logical command keys to allowlisted [`CommandSpec`]s and runs
 /// them with a wall-clock timeout and bounded output capture.
 #[derive(Debug, Clone)]
 pub struct CommandRunner {
-    allowlist: HashMap<&'static str, CommandSpec>,
+    allowlist: HashMap<&'static str, DiagnosticSpec>,
     timeout: Duration,
 }
 
@@ -48,56 +56,176 @@ impl Default for CommandRunner {
 /// The full, compile-time set of allowlisted commands. The keys are the
 /// stable identifiers the rmcp tool handlers pass to [`CommandExecutor::run`];
 /// they are also the names accepted by `NETDIAG_ALLOWLIST`.
-fn full_allowlist() -> HashMap<&'static str, CommandSpec> {
+pub const BUILTIN_COMMAND_COUNT: usize = 24;
+
+fn full_allowlist() -> HashMap<&'static str, DiagnosticSpec> {
     HashMap::from([
         (
             "if_status",
-            CommandSpec {
+            DiagnosticSpec::Process(CommandSpec {
                 program: "ip",
                 base_args: &["-j", "-s", "link", "show"],
-            },
+            }),
         ),
         (
             "mac_table",
-            CommandSpec {
+            DiagnosticSpec::Process(CommandSpec {
                 program: "bridge",
                 base_args: &["-j", "fdb", "show"],
-            },
+            }),
         ),
         (
             "neighbors",
-            CommandSpec {
+            DiagnosticSpec::Process(CommandSpec {
                 program: "ip",
                 base_args: &["-j", "neigh", "show"],
-            },
+            }),
         ),
         (
             "routes",
-            CommandSpec {
+            DiagnosticSpec::Process(CommandSpec {
                 program: "ip",
                 base_args: &["-j", "route", "show", "table", "all"],
-            },
+            }),
+        ),
+        (
+            "addr",
+            DiagnosticSpec::Process(CommandSpec {
+                program: "ip",
+                base_args: &["-j", "addr", "show"],
+            }),
+        ),
+        (
+            "link_detail",
+            DiagnosticSpec::Process(CommandSpec {
+                program: "ip",
+                base_args: &["-j", "-d", "link", "show"],
+            }),
+        ),
+        (
+            "route_get",
+            DiagnosticSpec::Process(CommandSpec {
+                program: "ip",
+                base_args: &["-j", "route", "get"],
+            }),
+        ),
+        (
+            "rules",
+            DiagnosticSpec::Process(CommandSpec {
+                program: "ip",
+                base_args: &["-j", "rule", "show"],
+            }),
         ),
         (
             "ping",
-            CommandSpec {
+            DiagnosticSpec::Process(CommandSpec {
                 program: "ping",
                 base_args: &["-n"],
-            },
+            }),
         ),
         (
             "traceroute",
-            CommandSpec {
+            DiagnosticSpec::Process(CommandSpec {
                 program: "traceroute",
                 base_args: &["-n"],
+            }),
+        ),
+        (
+            "sockets",
+            DiagnosticSpec::Process(CommandSpec {
+                program: "ss",
+                base_args: &["-H", "-tuna"],
+            }),
+        ),
+        (
+            "dns_status",
+            DiagnosticSpec::Process(CommandSpec {
+                program: "resolvectl",
+                base_args: &["status"],
+            }),
+        ),
+        (
+            "resolv_conf",
+            DiagnosticSpec::File {
+                path: "/etc/resolv.conf",
             },
         ),
         (
+            "ethtool",
+            DiagnosticSpec::Process(CommandSpec {
+                program: "ethtool",
+                base_args: &[],
+            }),
+        ),
+        (
+            "firewall",
+            DiagnosticSpec::Process(CommandSpec {
+                program: "nft",
+                base_args: &["list", "ruleset"],
+            }),
+        ),
+        (
+            "conntrack",
+            DiagnosticSpec::Process(CommandSpec {
+                program: "conntrack",
+                base_args: &["-L"],
+            }),
+        ),
+        (
+            "tcpdump_sample",
+            DiagnosticSpec::Process(CommandSpec {
+                program: "tcpdump",
+                base_args: &["-nn"],
+            }),
+        ),
+        (
             "logs",
-            CommandSpec {
+            DiagnosticSpec::Process(CommandSpec {
                 program: "journalctl",
                 base_args: &["--no-pager", "--output=short-iso"],
-            },
+            }),
+        ),
+        (
+            "failed_units",
+            DiagnosticSpec::Process(CommandSpec {
+                program: "systemctl",
+                base_args: &["--failed", "--no-pager", "--plain"],
+            }),
+        ),
+        (
+            "service_status",
+            DiagnosticSpec::Process(CommandSpec {
+                program: "systemctl",
+                base_args: &["status", "--no-pager"],
+            }),
+        ),
+        (
+            "dmesg",
+            DiagnosticSpec::Process(CommandSpec {
+                program: "dmesg",
+                base_args: &["-T"],
+            }),
+        ),
+        (
+            "uptime",
+            DiagnosticSpec::Process(CommandSpec {
+                program: "uptime",
+                base_args: &[],
+            }),
+        ),
+        (
+            "memory",
+            DiagnosticSpec::Process(CommandSpec {
+                program: "free",
+                base_args: &["-h"],
+            }),
+        ),
+        (
+            "filesystems",
+            DiagnosticSpec::Process(CommandSpec {
+                program: "df",
+                base_args: &["-h"],
+            }),
         ),
     ])
 }
@@ -128,6 +256,17 @@ impl CommandRunner {
     /// Spawn `spec` with the validated `extra_args` appended, enforcing the
     /// wall-clock timeout and bounding the captured output.
     async fn run_spec(
+        &self,
+        spec: &DiagnosticSpec,
+        extra_args: &[String],
+    ) -> Result<Value, NetdiagError> {
+        match spec {
+            DiagnosticSpec::Process(process) => self.run_process(process, extra_args).await,
+            DiagnosticSpec::File { path } => self.read_file(path, extra_args).await,
+        }
+    }
+
+    async fn run_process(
         &self,
         spec: &CommandSpec,
         extra_args: &[String],
@@ -162,6 +301,30 @@ impl CommandRunner {
             "exit_code": output.status.code(),
             "stdout": stdout,
             "stderr": stderr,
+        }))
+    }
+
+    async fn read_file(&self, path: &str, extra_args: &[String]) -> Result<Value, NetdiagError> {
+        if !extra_args.is_empty() {
+            return Err(NetdiagError::CommandExec {
+                message: "file diagnostics do not accept extra arguments".to_string(),
+            });
+        }
+
+        let bytes = timeout(self.timeout, fs::read(path))
+            .await
+            .map_err(|_| NetdiagError::CommandExec {
+                message: format!("timeout after {}s", self.timeout.as_secs()),
+            })?
+            .map_err(|e| NetdiagError::CommandExec {
+                message: format!("read failed: {e}"),
+            })?;
+
+        Ok(json!({
+            "ok": true,
+            "exit_code": 0,
+            "stdout": bounded_text(&bytes, config::MAX_STDOUT_BYTES, config::MAX_OUTPUT_LINES),
+            "stderr": "",
         }))
     }
 }
@@ -210,6 +373,11 @@ pub fn validate_interface(value: &str) -> Result<(), NetdiagError> {
     validate_token("interface", value)
 }
 
+/// Validate a systemd unit name token.
+pub fn validate_unit(value: &str) -> Result<(), NetdiagError> {
+    validate_token_with_extra("unit", value, &['@'])
+}
+
 /// Validate an IP address or hostname token.
 ///
 /// Beyond the shared token rules, a target must not begin with `-`: the
@@ -249,6 +417,14 @@ pub fn validate_mac(value: &str) -> Result<(), NetdiagError> {
 /// conservative character class. This is what blocks shell-metacharacter
 /// injection — extra args reach the command only through here.
 fn validate_token(name: &str, value: &str) -> Result<(), NetdiagError> {
+    validate_token_with_extra(name, value, &[])
+}
+
+fn validate_token_with_extra(
+    name: &str,
+    value: &str,
+    extra_allowed: &[char],
+) -> Result<(), NetdiagError> {
     if value.is_empty() || value.len() > 128 {
         return Err(NetdiagError::InvalidParam {
             name: name.to_string(),
@@ -256,10 +432,11 @@ fn validate_token(name: &str, value: &str) -> Result<(), NetdiagError> {
         });
     }
 
-    if !value
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | ':' | '-' | '_' | '/'))
-    {
+    if !value.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || matches!(c, '.' | ':' | '-' | '_' | '/')
+            || extra_allowed.contains(&c)
+    }) {
         return Err(NetdiagError::InvalidParam {
             name: name.to_string(),
             reason: "contains unsupported characters".to_string(),
@@ -289,6 +466,11 @@ mod tests {
     }
 
     #[test]
+    fn validate_unit_accepts_template_units() {
+        assert!(validate_unit("serial-getty@ttyS0.service").is_ok());
+    }
+
+    #[test]
     fn validate_ip_or_host_accepts_normal_targets() {
         assert!(validate_ip_or_host("8.8.8.8").is_ok());
         assert!(validate_ip_or_host("gateway.local").is_ok());
@@ -304,9 +486,9 @@ mod tests {
     }
 
     #[test]
-    fn new_runner_has_all_seven_commands() {
+    fn new_runner_has_all_commands() {
         let runner = CommandRunner::with_enabled(None);
-        assert_eq!(runner.allowlist.len(), 7);
+        assert_eq!(runner.allowlist.len(), BUILTIN_COMMAND_COUNT);
     }
 
     #[test]

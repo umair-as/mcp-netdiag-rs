@@ -50,8 +50,11 @@ pub fn journal_path() -> PathBuf {
 /// Env var that narrows the set of runnable command keys.
 ///
 /// When set, it is a comma-separated subset of the built-in command keys
-/// (`if_status`, `mac_table`, `neighbors`, `routes`, `ping`, `traceroute`,
-/// `logs`). Only the listed keys stay runnable; every other tool returns
+/// (`if_status`, `mac_table`, `neighbors`, `routes`, `addr`, `link_detail`,
+/// `route_get`, `rules`, `ping`, `traceroute`, `sockets`, `dns_status`,
+/// `resolv_conf`, `ethtool`, `firewall`, `conntrack`, `tcpdump_sample`,
+/// `logs`, `failed_units`, `service_status`, `dmesg`, `uptime`, `memory`,
+/// `filesystems`). Only the listed keys stay runnable; every other tool returns
 /// `CommandNotAllowed` (-32011).
 ///
 /// This is a **narrowing** filter: it can only *disable* built-in commands,

@@ -151,14 +151,31 @@ fn rpc_error_code(resp: &Value) -> i64 {
         .unwrap_or_else(|| panic!("expected JSON-RPC error.code in {resp}"))
 }
 
-const NET_TOOLS: [&str; 7] = [
+const MCP_TOOLS: &[&str] = &[
     "net.if_status",
     "net.mac_lookup",
     "net.neighbors",
     "net.routes",
+    "net.addr",
+    "net.link_detail",
+    "net.route_get",
+    "net.rules",
     "net.ping",
     "net.traceroute",
+    "net.sockets",
+    "net.dns_status",
+    "net.resolv_conf",
+    "net.ethtool",
+    "net.firewall",
+    "net.conntrack",
+    "net.tcpdump_sample",
     "net.logs",
+    "sys.failed_units",
+    "sys.service_status",
+    "sys.dmesg",
+    "sys.uptime",
+    "sys.memory",
+    "sys.filesystems",
 ];
 
 // ---- lifecycle / tools/list ----------------------------------------------
@@ -180,7 +197,7 @@ async fn initialize_advertises_tools_capability_and_server_info() {
 }
 
 #[tokio::test]
-async fn tools_list_contains_all_seven_dotted_tools_with_input_schema() {
+async fn tools_list_contains_all_dotted_tools_with_input_schema() {
     let responses = roundtrip(
         stub_server(),
         &[
@@ -192,12 +209,12 @@ async fn tools_list_contains_all_seven_dotted_tools_with_input_schema() {
     .await;
     let result = responses[1].get("result").expect("tools/list result");
     let tools = result["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 7, "all seven net.* tools must be listed");
+    assert_eq!(tools.len(), MCP_TOOLS.len(), "all MCP tools must be listed");
 
-    for name in NET_TOOLS {
+    for name in MCP_TOOLS {
         let t = tools
             .iter()
-            .find(|t| t["name"] == name)
+            .find(|t| t["name"] == *name)
             .unwrap_or_else(|| panic!("`{name}` must be listed under its dotted name"));
         assert!(
             t.get("inputSchema").is_some(),
@@ -271,6 +288,43 @@ async fn call_net_ping_normalizes_stub_output() {
     let sc = &resp["result"]["structuredContent"];
     assert_eq!(sc["tool"], "net.ping");
     assert_eq!(sc["status"], "ok");
+}
+
+#[tokio::test]
+async fn call_net_route_get_normalizes_stub_output() {
+    let resp = handshake_then_call(
+        stub_server(),
+        "net.route_get",
+        json!({"target": "192.0.2.1"}),
+    )
+    .await;
+    let sc = &resp["result"]["structuredContent"];
+    assert_eq!(sc["tool"], "net.route_get");
+    assert_eq!(sc["status"], "ok");
+}
+
+#[tokio::test]
+async fn call_sys_service_status_accepts_template_unit() {
+    let resp = handshake_then_call(
+        stub_server(),
+        "sys.service_status",
+        json!({"unit": "serial-getty@ttyS0.service", "lines": 10}),
+    )
+    .await;
+    let sc = &resp["result"]["structuredContent"];
+    assert_eq!(sc["tool"], "sys.service_status");
+    assert_eq!(sc["status"], "ok");
+}
+
+#[tokio::test]
+async fn call_net_tcpdump_sample_rejects_out_of_range_count() {
+    let resp = handshake_then_call(
+        stub_server(),
+        "net.tcpdump_sample",
+        json!({"interface": "eth0", "count": 500}),
+    )
+    .await;
+    assert_eq!(rpc_error_code(&resp), -32010);
 }
 
 // ---- tools/call: error paths ---------------------------------------------

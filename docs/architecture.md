@@ -59,9 +59,26 @@ sequenceDiagram
 - `net.mac_lookup` -> `bridge -j fdb show to <mac>`
 - `net.neighbors` -> `ip -j neigh show [dev <interface>]`
 - `net.routes` -> `ip -j route show table all`
+- `net.addr` -> `ip -j addr show [dev <interface>]`
+- `net.link_detail` -> `ip -j -d link show [dev <interface>]`
+- `net.route_get` -> `ip -j route get <target>`
+- `net.rules` -> `ip -j rule show`
 - `net.ping` -> `ping -n -c <1..10> -W <1..5> <target>`
 - `net.traceroute` -> `traceroute -n -m <1..30> <target>`
+- `net.sockets` -> `ss -H -tuna`
+- `net.dns_status` -> `resolvectl status`
+- `net.resolv_conf` -> read `/etc/resolv.conf`
+- `net.ethtool` -> `ethtool <interface>`
+- `net.firewall` -> `nft list ruleset`
+- `net.conntrack` -> `conntrack -L`
+- `net.tcpdump_sample` -> `tcpdump -nn -i <interface> -c <1..50>`
 - `net.logs` -> `journalctl --no-pager --output=short-iso -n <1..200> [-u <unit>]`
+- `sys.failed_units` -> `systemctl --failed --no-pager --plain`
+- `sys.service_status` -> `systemctl status --no-pager --lines <1..200> <unit>`
+- `sys.dmesg` -> `dmesg -T`
+- `sys.uptime` -> `uptime`
+- `sys.memory` -> `free -h`
+- `sys.filesystems` -> `df -h`
 
 ## Guardrails in Current Implementation
 
