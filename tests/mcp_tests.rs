@@ -394,6 +394,346 @@ async fn disabled_command_returns_not_allowed() {
     assert_eq!(rpc_error_code(&resp), -32011);
 }
 
+// ---- privileged gating: wire-level --------------------------------------------
+
+/// The six privileged tools (mirrors `netdiag::commands::PRIVILEGED_KEYS` but lives
+/// under the dotted MCP tool names). Kept inline so the wire test asserts
+/// the operator-facing names, not the internal command keys.
+const PRIVILEGED_TOOLS: &[&str] = &[
+    "net.ping",
+    "net.traceroute",
+    "net.tcpdump_sample",
+    "net.firewall",
+    "net.conntrack",
+    "sys.dmesg",
+];
+
+#[tokio::test]
+async fn tools_list_still_advertises_privileged_when_disabled() {
+    // Disabled privileged tools must remain visible in tools/list — mirrors the
+    // existing NETDIAG_ALLOWLIST behavior. The refusal happens at call time.
+    let server = NetdiagServer::new(CommandRunner::with_layers(None, &HashSet::new()), None);
+    let responses = roundtrip(
+        server,
+        &[
+            init_request(),
+            initialized_notification(),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        ],
+    )
+    .await;
+    let tools = responses[1]["result"]["tools"]
+        .as_array()
+        .expect("tools array");
+    for name in PRIVILEGED_TOOLS {
+        assert!(
+            tools.iter().any(|t| t["name"] == *name),
+            "{name} must remain visible in tools/list even when disabled",
+        );
+    }
+}
+
+/// The three wire-emitting privileged tools. Each call emits packets on the
+/// network or toggles promiscuous mode, so they advertise
+/// `readOnlyHint = false` and `idempotentHint = false` per the MCP spec
+/// (no host config changes, but observable environmental effects exist).
+const PRIVILEGED_WIRE_EMITTERS: &[&str] = &["net.ping", "net.traceroute", "net.tcpdump_sample"];
+
+/// The three privileged-read privileged tools. They query local kernel state
+/// without emitting anything, so they keep `readOnlyHint = true` and
+/// `idempotentHint = true`. They are privileged only because of the
+/// capability requirement.
+const PRIVILEGED_KERNEL_READS: &[&str] = &["net.firewall", "net.conntrack", "sys.dmesg"];
+
+#[tokio::test]
+async fn tools_list_marks_privileged_in_description_and_open_world_hint() {
+    // Every privileged tool carries the "[Privileged: <CAP>...]" description
+    // prefix, `openWorldHint = true`, and `destructiveHint = false`. The
+    // readOnlyHint / idempotentHint split between wire-emitters and
+    // privileged-reads is asserted in the two follow-up tests below.
+    let server = NetdiagServer::new(
+        CommandRunner::with_layers(
+            None,
+            &[mcp_netdiag_rs::config::PRIVILEGED_ALL_SENTINEL.to_string()]
+                .into_iter()
+                .collect(),
+        ),
+        None,
+    );
+    let responses = roundtrip(
+        server,
+        &[
+            init_request(),
+            initialized_notification(),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        ],
+    )
+    .await;
+    let tools = responses[1]["result"]["tools"]
+        .as_array()
+        .expect("tools array");
+    for name in PRIVILEGED_TOOLS {
+        let t = tools
+            .iter()
+            .find(|t| t["name"] == *name)
+            .unwrap_or_else(|| panic!("{name} listed"));
+        let desc = t["description"].as_str().unwrap_or_default();
+        assert!(
+            desc.starts_with("[Privileged:"),
+            "{name} description must carry the privileged capability marker: {desc:?}",
+        );
+        assert_eq!(
+            t["annotations"]["openWorldHint"],
+            json!(true),
+            "{name} must advertise openWorldHint=true",
+        );
+        assert_eq!(t["annotations"]["destructiveHint"], json!(false));
+    }
+}
+
+#[tokio::test]
+async fn tools_list_wire_emitting_privileged_tools_flip_read_only_and_idempotent_hints() {
+    // ping / traceroute / tcpdump_sample emit packets or toggle promisc —
+    // per MCP spec, readOnlyHint and idempotentHint must be false because
+    // each call produces fresh observable effects. The decision is locked
+    // in SECURITY.md "Default vs privileged tool model"; regression guard.
+    let server = NetdiagServer::new(
+        CommandRunner::with_layers(
+            None,
+            &[mcp_netdiag_rs::config::PRIVILEGED_ALL_SENTINEL.to_string()]
+                .into_iter()
+                .collect(),
+        ),
+        None,
+    );
+    let responses = roundtrip(
+        server,
+        &[
+            init_request(),
+            initialized_notification(),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        ],
+    )
+    .await;
+    let tools = responses[1]["result"]["tools"]
+        .as_array()
+        .expect("tools array");
+    for name in PRIVILEGED_WIRE_EMITTERS {
+        let t = tools
+            .iter()
+            .find(|t| t["name"] == *name)
+            .unwrap_or_else(|| panic!("{name} listed"));
+        assert_eq!(
+            t["annotations"]["readOnlyHint"],
+            json!(false),
+            "{name} emits packets / toggles promisc — readOnlyHint must be false",
+        );
+        assert_eq!(
+            t["annotations"]["idempotentHint"],
+            json!(false),
+            "{name} produces fresh observable effects — idempotentHint must be false",
+        );
+    }
+}
+
+#[tokio::test]
+async fn tools_list_privileged_read_privileged_tools_keep_read_only_hints_true() {
+    // firewall / conntrack / dmesg are pure reads of kernel state — they
+    // are privileged only because they need elevated caps. The MCP-spec
+    // readOnlyHint stays true; idempotentHint stays true (consecutive
+    // calls have no additional effect on the environment).
+    let server = NetdiagServer::new(
+        CommandRunner::with_layers(
+            None,
+            &[mcp_netdiag_rs::config::PRIVILEGED_ALL_SENTINEL.to_string()]
+                .into_iter()
+                .collect(),
+        ),
+        None,
+    );
+    let responses = roundtrip(
+        server,
+        &[
+            init_request(),
+            initialized_notification(),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        ],
+    )
+    .await;
+    let tools = responses[1]["result"]["tools"]
+        .as_array()
+        .expect("tools array");
+    for name in PRIVILEGED_KERNEL_READS {
+        let t = tools
+            .iter()
+            .find(|t| t["name"] == *name)
+            .unwrap_or_else(|| panic!("{name} listed"));
+        assert_eq!(
+            t["annotations"]["readOnlyHint"],
+            json!(true),
+            "{name} is a pure kernel-state read — readOnlyHint must stay true",
+        );
+        assert_eq!(t["annotations"]["idempotentHint"], json!(true));
+    }
+}
+
+#[tokio::test]
+async fn tools_list_default_tool_advertises_closed_world_annotation() {
+    // Spot-check: a default tool advertises open_world_hint=false and has no
+    // privileged prefix in its description.
+    let server = stub_server();
+    let responses = roundtrip(
+        server,
+        &[
+            init_request(),
+            initialized_notification(),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        ],
+    )
+    .await;
+    let tools = responses[1]["result"]["tools"]
+        .as_array()
+        .expect("tools array");
+    let routes = tools
+        .iter()
+        .find(|t| t["name"] == "net.routes")
+        .expect("net.routes listed");
+    assert_eq!(routes["annotations"]["openWorldHint"], json!(false));
+    assert!(!routes["description"]
+        .as_str()
+        .unwrap_or_default()
+        .starts_with("[Privileged:"));
+}
+
+#[tokio::test]
+async fn call_privileged_default_disabled_returns_privileged_message() {
+    // Default deployment: NETDIAG_ENABLE_PRIVILEGED unset → empty opt-in set.
+    // Every privileged tool refuses with -32011, message mentions the env var.
+    for tool in PRIVILEGED_TOOLS {
+        let server = NetdiagServer::new(CommandRunner::with_layers(None, &HashSet::new()), None);
+        let args = privileged_call_args(tool);
+        let resp = handshake_then_call(server, tool, args).await;
+        assert_eq!(
+            rpc_error_code(&resp),
+            -32011,
+            "{tool} must refuse by default: {resp}",
+        );
+        let msg = resp["error"]["message"]
+            .as_str()
+            .unwrap_or_else(|| panic!("error.message missing for {tool}: {resp}"));
+        assert!(
+            msg.contains("NETDIAG_ENABLE_PRIVILEGED"),
+            "{tool} refusal must surface the env-var hint, got: {msg}",
+        );
+    }
+}
+
+#[tokio::test]
+async fn call_privileged_subset_opts_in_only_listed_tool() {
+    // NETDIAG_ENABLE_PRIVILEGED=ping (one tool) → ping passes the privileged gate;
+    // the other five privileged tools still refuse with -32011.
+    let privileged: HashSet<String> = ["ping"].iter().map(|s| s.to_string()).collect();
+
+    // ping passes the gate. The StubRunner-equivalent isn't usable here
+    // (it skips gating), so we use the real runner; ping with target
+    // 127.0.0.1 returns successfully on a Linux test host. We only assert
+    // the response is NOT a privileged refusal (status may be "ok" or "fail"
+    // depending on host capabilities — the call reached past the gate).
+    {
+        let server = NetdiagServer::new(CommandRunner::with_layers(None, &privileged), None);
+        let resp = handshake_then_call(
+            server,
+            "net.ping",
+            json!({"target": "127.0.0.1", "count": 1, "timeout_secs": 1}),
+        )
+        .await;
+        if let Some(err) = resp.get("error") {
+            // Only acceptable error here is a spawn/exec issue, NOT privileged.
+            let msg = err["message"].as_str().unwrap_or_default();
+            assert!(
+                !msg.contains("NETDIAG_ENABLE_PRIVILEGED"),
+                "ping must pass privileged gate when opted in; got privileged refusal: {resp}",
+            );
+        }
+    }
+
+    // The other five privileged tools still refuse with privileged message.
+    for tool in PRIVILEGED_TOOLS.iter().filter(|t| **t != "net.ping") {
+        let server = NetdiagServer::new(CommandRunner::with_layers(None, &privileged), None);
+        let resp = handshake_then_call(server, tool, privileged_call_args(tool)).await;
+        assert_eq!(rpc_error_code(&resp), -32011, "{tool} must still refuse");
+        let msg = resp["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            msg.contains("NETDIAG_ENABLE_PRIVILEGED"),
+            "{tool} refusal must keep the env-var hint",
+        );
+    }
+}
+
+#[tokio::test]
+async fn call_privileged_all_sentinel_admits_every_privileged_tool() {
+    // NETDIAG_ENABLE_PRIVILEGED=all → every privileged tool passes the privileged gate.
+    // We don't assert successful *execution* (the test host may lack
+    // nft / conntrack / tcpdump / dmesg permissions); we only assert the
+    // response does NOT carry the privileged env-var hint, proving the gate
+    // didn't fire. Parallel structure to
+    // `call_privileged_subset_opts_in_only_listed_tool` but for the `all`
+    // sentinel path.
+    let privileged: HashSet<String> = [mcp_netdiag_rs::config::PRIVILEGED_ALL_SENTINEL.to_string()]
+        .into_iter()
+        .collect();
+    for tool in PRIVILEGED_TOOLS {
+        let server = NetdiagServer::new(CommandRunner::with_layers(None, &privileged), None);
+        let resp = handshake_then_call(server, tool, privileged_call_args(tool)).await;
+        if let Some(err) = resp.get("error") {
+            let msg = err["message"].as_str().unwrap_or_default();
+            assert!(
+                !msg.contains("NETDIAG_ENABLE_PRIVILEGED"),
+                "{tool} must pass privileged gate under `all`; got privileged refusal: {resp}",
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn call_privileged_allowlist_precedence_returns_command_not_allowed() {
+    // NETDIAG_ALLOWLIST narrowed to exclude ping + NETDIAG_ENABLE_PRIVILEGED=all
+    // → ping still refused, but with CommandNotAllowed (no env-var hint),
+    // proving the allowlist takes precedence.
+    let allow: HashSet<String> = ["routes"].iter().map(|s| s.to_string()).collect();
+    let privileged: HashSet<String> = [mcp_netdiag_rs::config::PRIVILEGED_ALL_SENTINEL.to_string()]
+        .into_iter()
+        .collect();
+    let server = NetdiagServer::new(CommandRunner::with_layers(Some(&allow), &privileged), None);
+    let resp = handshake_then_call(
+        server,
+        "net.ping",
+        json!({"target": "127.0.0.1", "count": 1, "timeout_secs": 1}),
+    )
+    .await;
+    assert_eq!(rpc_error_code(&resp), -32011);
+    let msg = resp["error"]["message"].as_str().unwrap_or_default();
+    // CommandNotAllowed message format from errors.rs — does NOT mention
+    // the privileged env var (allowlist precedence proof).
+    assert!(
+        msg.contains("not allowed") && !msg.contains("NETDIAG_ENABLE_PRIVILEGED"),
+        "allowlist refusal must NOT surface privileged hint: {msg}",
+    );
+}
+
+/// Build the minimal valid argument payload for each privileged tool. Per-tool
+/// because the param structs use `deny_unknown_fields` and several tools
+/// require an `interface` / `target` argument.
+fn privileged_call_args(tool: &str) -> Value {
+    match tool {
+        "net.ping" => json!({"target": "127.0.0.1", "count": 1, "timeout_secs": 1}),
+        "net.traceroute" => json!({"target": "127.0.0.1", "max_hops": 1}),
+        "net.tcpdump_sample" => json!({"interface": "lo", "count": 1}),
+        // Paramless tools take an empty object.
+        _ => json!({}),
+    }
+}
+
 // ---- audit journal --------------------------------------------------------
 
 #[tokio::test]

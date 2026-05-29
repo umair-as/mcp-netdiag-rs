@@ -81,34 +81,43 @@ Architecture constraint: keep the `mcp/` rmcp adapter separate from the
 ## 4  MCP tool surface
 
 Tool names and field shapes are stable — do not rename or reshape them.
-All tools are read-only.
+All tools are read-only w.r.t. host configuration: nothing edits a
+route, mutates a unit, or writes a file. Three privileged tools
+(`net.ping`, `net.traceroute`, `net.tcpdump_sample`) do emit observable
+side effects on the wire / toggle promisc — see SECURITY.md for the
+finer distinction and how it shapes the `ToolAnnotations` they
+advertise.
 
-| Tool | Params | Command |
-|---|---|---|
-| `net.if_status` | `{interface?}` | `ip -j -s link show [dev <iface>]` |
-| `net.mac_lookup` | `{mac}` | `bridge -j fdb show to <mac>` |
-| `net.neighbors` | `{interface?}` | `ip -j neigh show [dev <iface>]` |
-| `net.routes` | — | `ip -j route show table all` |
-| `net.addr` | `{interface?}` | `ip -j addr show [dev <iface>]` |
-| `net.link_detail` | `{interface?}` | `ip -j -d link show [dev <iface>]` |
-| `net.route_get` | `{target}` | `ip -j route get <target>` |
-| `net.rules` | — | `ip -j rule show` |
-| `net.ping` | `{target, count?, timeout_secs?}` | `ping -n -c <1..10> -W <1..5> <target>` |
-| `net.traceroute` | `{target, max_hops?}` | `traceroute -n -m <1..30> <target>` |
-| `net.sockets` | — | `ss -H -tuna` |
-| `net.dns_status` | — | `resolvectl status` |
-| `net.resolv_conf` | — | read `/etc/resolv.conf` |
-| `net.ethtool` | `{interface}` | `ethtool <interface>` |
-| `net.firewall` | — | `nft list ruleset` |
-| `net.conntrack` | — | `conntrack -L` |
-| `net.tcpdump_sample` | `{interface, count?}` | `tcpdump -nn -i <interface> -c <1..50>` |
-| `net.logs` | `{lines?, unit?}` | `journalctl --no-pager --output=short-iso -n <1..200> [-u <unit>]` |
-| `sys.failed_units` | — | `systemctl --failed --no-pager --plain` |
-| `sys.service_status` | `{unit, lines?}` | `systemctl status --no-pager --lines <1..200> <unit>` |
-| `sys.dmesg` | — | `dmesg -T` |
-| `sys.uptime` | — | `uptime` |
-| `sys.memory` | — | `free -h` |
-| `sys.filesystems` | — | `df -h` |
+The `Privileged` column captures the gating model in §6: an unmarked
+row runs by default; a `✓` row requires `NETDIAG_ENABLE_PRIVILEGED`
+opt-in.
+
+| Privileged | Tool | Params | Command |
+|---|---|---|---|
+|  | `net.if_status` | `{interface?}` | `ip -j -s link show [dev <iface>]` |
+|  | `net.mac_lookup` | `{mac}` | `bridge -j fdb show to <mac>` |
+|  | `net.neighbors` | `{interface?}` | `ip -j neigh show [dev <iface>]` |
+|  | `net.routes` | — | `ip -j route show table all` |
+|  | `net.addr` | `{interface?}` | `ip -j addr show [dev <iface>]` |
+|  | `net.link_detail` | `{interface?}` | `ip -j -d link show [dev <iface>]` |
+|  | `net.route_get` | `{target}` | `ip -j route get <target>` |
+|  | `net.rules` | — | `ip -j rule show` |
+| ✓ | `net.ping` | `{target, count?, timeout_secs?}` | `ping -n -c <1..10> -W <1..5> <target>` |
+| ✓ | `net.traceroute` | `{target, max_hops?}` | `traceroute -n -m <1..30> <target>` |
+|  | `net.sockets` | — | `ss -H -tuna` |
+|  | `net.dns_status` | — | `resolvectl status` |
+|  | `net.resolv_conf` | — | read `/etc/resolv.conf` |
+|  | `net.ethtool` | `{interface}` | `ethtool <interface>` |
+| ✓ | `net.firewall` | — | `nft list ruleset` |
+| ✓ | `net.conntrack` | — | `conntrack -L` |
+| ✓ | `net.tcpdump_sample` | `{interface, count?}` | `tcpdump -nn -i <interface> -c <1..50>` |
+|  | `net.logs` | `{lines?, unit?}` | `journalctl --no-pager --output=short-iso -n <1..200> [-u <unit>]` |
+|  | `sys.failed_units` | — | `systemctl --failed --no-pager --plain` |
+|  | `sys.service_status` | `{unit, lines?}` | `systemctl status --no-pager --lines <1..200> <unit>` |
+| ✓ | `sys.dmesg` | — | `dmesg -T` |
+|  | `sys.uptime` | — | `uptime` |
+|  | `sys.memory` | — | `free -h` |
+|  | `sys.filesystems` | — | `df -h` |
 
 - Dotted tool names stay (no rename to `net_ping`).
 - Every tool returns a structured envelope:
@@ -120,6 +129,9 @@ All tools are read-only.
   rmcp SDK does not reject unknown arguments for a paramless tool. Tools
   with a param struct reject unknown fields (`deny_unknown_fields`) →
   `-32602`.
+- Privileged source of truth: `PRIVILEGED_KEYS` in `src/netdiag/commands.rs`. If
+  you add or remove a privileged tool, update that constant AND the §6
+  env-var table AND SECURITY.md's privileged-tools table.
 
 ## 5  Statelessness
 
@@ -153,6 +165,7 @@ pub const MAX_OUTPUT_LINES: usize = 512;
 |---|---|---|
 | `NETDIAG_JOURNAL` | JSONL tool-call audit journal path. Always-on; an unwritable path degrades to a `tracing::warn` and the server continues without auditing. | `/tmp/mcp-netdiag-journal.jsonl` |
 | `NETDIAG_ALLOWLIST` | Comma-separated subset of built-in command keys. When set, only the listed commands run. **Narrowing only** — cannot add programs/args. | unset → all enabled |
+| `NETDIAG_ENABLE_PRIVILEGED` | Opt-in for the six privileged tools (`ping`, `traceroute`, `tcpdump_sample`, `firewall`, `conntrack`, `dmesg`) that require elevated capabilities (CAP_NET_RAW / CAP_NET_ADMIN / CAP_SYSLOG) or emit on-wire side effects. Comma-separated subset of those keys, or the `all` sentinel, or `none` / empty / unset → every privileged tool refused with `-32011`. Composes with `NETDIAG_ALLOWLIST`: a privileged opt-in cannot widen a narrower allowlist. | unset → all privileged disabled |
 | `RUST_LOG` | `tracing-subscriber` env filter. | `mcp_netdiag_rs=info` |
 
 ## 7  MCP wire & framing

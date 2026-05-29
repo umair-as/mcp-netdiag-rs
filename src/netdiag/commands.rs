@@ -39,11 +39,26 @@ enum DiagnosticSpec {
     File { path: &'static str },
 }
 
+/// The six privileged command keys: tools that require elevated Linux
+/// capabilities (CAP_NET_RAW / CAP_NET_ADMIN / CAP_SYSLOG) or that emit
+/// observable side effects on the wire / kernel. Refused by default; the
+/// operator opts in via `NETDIAG_ENABLE_PRIVILEGED` (see
+/// [`crate::config::PRIVILEGED_ENABLE_ENV`]).
+pub const PRIVILEGED_KEYS: &[&str] = &[
+    "ping",
+    "traceroute",
+    "tcpdump_sample",
+    "firewall",
+    "conntrack",
+    "dmesg",
+];
+
 /// Resolves logical command keys to allowlisted [`CommandSpec`]s and runs
 /// them with a wall-clock timeout and bounded output capture.
 #[derive(Debug, Clone)]
 pub struct CommandRunner {
     allowlist: HashMap<&'static str, DiagnosticSpec>,
+    privileged_enabled: HashSet<String>,
     timeout: Duration,
 }
 
@@ -231,24 +246,49 @@ fn full_allowlist() -> HashMap<&'static str, DiagnosticSpec> {
 }
 
 impl CommandRunner {
-    /// Build a runner, applying the `NETDIAG_ALLOWLIST` narrowing filter
-    /// from the environment (see [`crate::config::enabled_commands`]).
+    /// Build a runner, applying both env-var-driven filters from the
+    /// process environment at construction time:
+    /// - `NETDIAG_ALLOWLIST` narrows the built-in command set
+    ///   ([`crate::config::enabled_commands`]).
+    /// - `NETDIAG_ENABLE_PRIVILEGED` opts in to the privileged tools
+    ///   ([`crate::config::privileged_enabled`]).
+    ///
+    /// Both values are captured *once* here, never re-read per call — the
+    /// runner stays stateless from the MCP request's point of view.
     pub fn new() -> Self {
-        Self::with_enabled(config::enabled_commands().as_ref())
+        let allow = config::enabled_commands();
+        let privileged = config::privileged_enabled();
+        Self::with_layers(allow.as_ref(), &privileged)
     }
 
-    /// Build a runner with an explicit enabled-key filter — `None` enables
-    /// every built-in command, `Some(set)` keeps only the listed keys.
-    /// Production uses [`CommandRunner::new`]; this constructor exists so
-    /// tests can exercise the narrowing filter without touching the
-    /// process-global environment.
+    /// Build a runner with an explicit allowlist narrowing filter, leaving
+    /// privileged fully *disabled* (the default, safe choice). Production uses
+    /// [`CommandRunner::new`]; this constructor exists so tests can exercise
+    /// the narrowing filter without touching the process-global environment.
     pub fn with_enabled(enabled: Option<&HashSet<String>>) -> Self {
+        Self::with_layers(enabled, &HashSet::new())
+    }
+
+    /// Build a runner with both filters specified explicitly — used by
+    /// production [`CommandRunner::new`] and by privileged tests that need to
+    /// control both axes without env-var races.
+    ///
+    /// `enabled = None` keeps every built-in command runnable; `Some(set)`
+    /// narrows the allowlist to the listed keys. `privileged_enabled` is the
+    /// opt-in set in [`crate::config::PRIVILEGED_ENABLE_ENV`] form
+    /// (tool keys, or the `"all"` sentinel — see
+    /// [`crate::config::PRIVILEGED_ALL_SENTINEL`]).
+    pub fn with_layers(
+        enabled: Option<&HashSet<String>>,
+        privileged_enabled: &HashSet<String>,
+    ) -> Self {
         let mut allowlist = full_allowlist();
         if let Some(set) = enabled {
             allowlist.retain(|key, _| set.contains(*key));
         }
         Self {
             allowlist,
+            privileged_enabled: privileged_enabled.clone(),
             timeout: config::default_timeout(),
         }
     }
@@ -330,9 +370,14 @@ impl CommandRunner {
 }
 
 impl CommandExecutor for CommandRunner {
-    /// Resolve `key` against the (possibly narrowed) allowlist and run it.
-    /// A key that is unknown *or* disabled by `NETDIAG_ALLOWLIST` yields
-    /// `CommandNotAllowed` before any process is spawned.
+    /// Resolve `key` against the (possibly narrowed) allowlist and the
+    /// privileged opt-in set, then run it. Refusal precedence is fixed:
+    /// 1. allowlist miss → `CommandNotAllowed` (-32011)
+    /// 2. privileged key not opted in → `PrivilegedDisabled` (-32011, distinct message)
+    ///
+    /// Both refusals return before any process is spawned. Allowlist
+    /// precedence means a privileged opt-in cannot widen a narrower
+    /// `NETDIAG_ALLOWLIST`.
     async fn run(&self, key: &str, extra: &[String]) -> Result<Value, NetdiagError> {
         let spec =
             self.allowlist
@@ -341,8 +386,38 @@ impl CommandExecutor for CommandRunner {
                 .ok_or_else(|| NetdiagError::CommandNotAllowed {
                     command: key.to_string(),
                 })?;
+        check_privileged(key, &self.privileged_enabled)?;
         self.run_spec(&spec, extra).await
     }
+}
+
+/// Pure privileged gating check: `Ok(())` if `key` is not privileged, or if the
+/// caller's opt-in set admits it. `Err(PrivilegedDisabled)` otherwise. Kept
+/// side-effect-free so the gating logic is unit-testable without any
+/// runner or env-var state.
+///
+/// A `privileged_enabled` entry equal to [`crate::config::PRIVILEGED_ALL_SENTINEL`]
+/// passes every privileged key. Other entries are matched literally — typos,
+/// non-privileged names, and case-variants of the sentinel (`ALL`, `All`)
+/// are inert because nothing in the matchable set is uppercase.
+///
+/// `pub(crate)` so [`crate::config`] tests can pipe `parse_privileged` output
+/// through this function to assert the parser/check contract end-to-end.
+pub(crate) fn check_privileged(
+    key: &str,
+    privileged_enabled: &HashSet<String>,
+) -> Result<(), NetdiagError> {
+    if !PRIVILEGED_KEYS.contains(&key) {
+        return Ok(());
+    }
+    if privileged_enabled.contains(config::PRIVILEGED_ALL_SENTINEL)
+        || privileged_enabled.contains(key)
+    {
+        return Ok(());
+    }
+    Err(NetdiagError::PrivilegedDisabled {
+        key: key.to_string(),
+    })
 }
 
 /// Clip raw command output to `max_bytes` then `max_lines`, decoding with
@@ -539,5 +614,145 @@ mod tests {
         let runner = CommandRunner::with_enabled(Some(&enabled));
         let err = runner.run("logs", &[]).await.unwrap_err();
         assert!(matches!(err, NetdiagError::CommandNotAllowed { .. }));
+    }
+
+    // ---- privileged gating -------------------------------------------------
+
+    #[test]
+    fn privileged_keys_match_designed_set() {
+        // Regression guard: any change to PRIVILEGED_KEYS must be deliberate. The
+        // designed set is the six tools requiring CAP_* or with on-wire
+        // side effects.
+        let expected = [
+            "ping",
+            "traceroute",
+            "tcpdump_sample",
+            "firewall",
+            "conntrack",
+            "dmesg",
+        ];
+        assert_eq!(PRIVILEGED_KEYS.len(), expected.len());
+        for k in expected {
+            assert!(PRIVILEGED_KEYS.contains(&k), "missing privileged key: {k}");
+        }
+    }
+
+    #[test]
+    fn check_privileged_default_blocks_every_privileged_key() {
+        let empty = HashSet::new();
+        for &k in PRIVILEGED_KEYS {
+            let err = check_privileged(k, &empty).unwrap_err();
+            assert!(
+                matches!(err, NetdiagError::PrivilegedDisabled { ref key } if key == k),
+                "expected PrivilegedDisabled for {k}, got {err:?}"
+            );
+            assert_eq!(err.code(), -32011);
+        }
+    }
+
+    #[test]
+    fn check_privileged_with_all_sentinel_admits_every_privileged_key() {
+        let mut set = HashSet::new();
+        set.insert(config::PRIVILEGED_ALL_SENTINEL.to_string());
+        for &k in PRIVILEGED_KEYS {
+            assert!(
+                check_privileged(k, &set).is_ok(),
+                "{k} must pass under `all`"
+            );
+        }
+    }
+
+    #[test]
+    fn check_privileged_subset_admits_only_listed_keys() {
+        let set: HashSet<String> = ["ping"].iter().map(|s| s.to_string()).collect();
+        assert!(check_privileged("ping", &set).is_ok());
+        for &k in PRIVILEGED_KEYS.iter().filter(|k| **k != "ping") {
+            assert!(
+                matches!(
+                    check_privileged(k, &set),
+                    Err(NetdiagError::PrivilegedDisabled { .. })
+                ),
+                "{k} must still be refused when only ping is opted in"
+            );
+        }
+    }
+
+    #[test]
+    fn check_privileged_is_a_noop_for_non_privileged_keys() {
+        // Default keys must pass regardless of the opt-in set's contents.
+        let empty = HashSet::new();
+        for k in ["routes", "if_status", "logs", "uptime"] {
+            assert!(check_privileged(k, &empty).is_ok());
+        }
+    }
+
+    #[test]
+    fn check_privileged_ignores_unknown_or_non_privileged_entries_in_set() {
+        // Operator typo / pasted default keys: silently inert. They never
+        // accidentally enable a privileged tool because no privileged key matches
+        // them; privileged tools stay refused.
+        let set: HashSet<String> = ["bogus", "routes", "if_status"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        for &k in PRIVILEGED_KEYS {
+            assert!(
+                matches!(
+                    check_privileged(k, &set),
+                    Err(NetdiagError::PrivilegedDisabled { .. })
+                ),
+                "{k} must stay refused when only non-privileged names are listed"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn runner_default_refuses_privileged_with_privileged_disabled_variant() {
+        // Default `with_enabled(None)` admits every command via the
+        // allowlist but leaves privileged disabled — ping is refused with the
+        // privileged variant (carrying the env-var hint), NOT CommandNotAllowed.
+        let runner = CommandRunner::with_enabled(None);
+        let err = runner.run("ping", &[]).await.unwrap_err();
+        assert!(
+            matches!(err, NetdiagError::PrivilegedDisabled { ref key } if key == "ping"),
+            "expected PrivilegedDisabled, got {err:?}"
+        );
+        assert!(err.to_string().contains("NETDIAG_ENABLE_PRIVILEGED"));
+    }
+
+    #[tokio::test]
+    async fn runner_privileged_all_passes_privileged_check_before_spawn() {
+        // With `all` opted in, the privileged check is a no-op; we don't assert
+        // the spawn outcome (the test host may not have `traceroute`
+        // installed). We only assert that the refusal we'd otherwise see
+        // does NOT come back as PrivilegedDisabled.
+        let privileged: HashSet<String> = [config::PRIVILEGED_ALL_SENTINEL.to_string()]
+            .into_iter()
+            .collect();
+        let runner = CommandRunner::with_layers(None, &privileged);
+        let result = runner
+            .run("traceroute", &["-m".into(), "1".into(), "127.0.0.1".into()])
+            .await;
+        if let Err(NetdiagError::PrivilegedDisabled { .. }) = result {
+            panic!("privileged gate must not fire when `all` is opted in");
+        }
+    }
+
+    #[tokio::test]
+    async fn runner_allowlist_takes_precedence_over_privileged_opt_in() {
+        // Operator narrows the allowlist to exclude `ping` but also opts
+        // every privileged tool in. The allowlist wins — `ping` is refused
+        // with CommandNotAllowed (the unconditional "not in allowlist"
+        // refusal), NOT PrivilegedDisabled.
+        let allow: HashSet<String> = ["routes"].iter().map(|s| s.to_string()).collect();
+        let privileged: HashSet<String> = [config::PRIVILEGED_ALL_SENTINEL.to_string()]
+            .into_iter()
+            .collect();
+        let runner = CommandRunner::with_layers(Some(&allow), &privileged);
+        let err = runner.run("ping", &[]).await.unwrap_err();
+        assert!(
+            matches!(err, NetdiagError::CommandNotAllowed { ref command } if command == "ping"),
+            "allowlist must refuse first; got {err:?}"
+        );
     }
 }
