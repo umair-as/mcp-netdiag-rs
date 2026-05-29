@@ -671,6 +671,31 @@ async fn call_tier2_subset_opts_in_only_listed_tool() {
 }
 
 #[tokio::test]
+async fn call_tier2_all_sentinel_admits_every_tier2_tool() {
+    // NETDIAG_ENABLE_TIER2=all → every tier-2 tool passes the tier-2 gate.
+    // We don't assert successful *execution* (the test host may lack
+    // nft / conntrack / tcpdump / dmesg permissions); we only assert the
+    // response does NOT carry the tier-2 env-var hint, proving the gate
+    // didn't fire. Parallel structure to
+    // `call_tier2_subset_opts_in_only_listed_tool` but for the `all`
+    // sentinel path.
+    let tier2: HashSet<String> = [mcp_netdiag_rs::config::TIER2_ALL_SENTINEL.to_string()]
+        .into_iter()
+        .collect();
+    for tool in TIER2_TOOLS {
+        let server = NetdiagServer::new(CommandRunner::with_layers(None, &tier2), None);
+        let resp = handshake_then_call(server, tool, tier2_call_args(tool)).await;
+        if let Some(err) = resp.get("error") {
+            let msg = err["message"].as_str().unwrap_or_default();
+            assert!(
+                !msg.contains("NETDIAG_ENABLE_TIER2"),
+                "{tool} must pass tier-2 gate under `all`; got tier-2 refusal: {resp}",
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn call_tier2_allowlist_precedence_returns_command_not_allowed() {
     // NETDIAG_ALLOWLIST narrowed to exclude ping + NETDIAG_ENABLE_TIER2=all
     // → ping still refused, but with CommandNotAllowed (no env-var hint),

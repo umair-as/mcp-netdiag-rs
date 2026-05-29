@@ -193,6 +193,37 @@ mod tests {
     }
 
     #[test]
+    fn parse_tier2_is_case_sensitive_for_all_sentinel() {
+        // The "all" sentinel is matched at check time against the literal
+        // lowercase `TIER2_ALL_SENTINEL`. parse_tier2 returns tokens
+        // verbatim, so "ALL" lands in the set but is inert — it never
+        // triggers the sentinel branch and matches no tier-2 key. Locks
+        // in the case-sensitive contract documented in README.
+        let upper = parse_tier2("ALL");
+        assert_eq!(upper.len(), 1);
+        assert!(upper.contains("ALL"));
+        assert!(
+            !upper.contains(TIER2_ALL_SENTINEL),
+            "uppercase ALL must NOT collapse to the all-sentinel literal",
+        );
+    }
+
+    #[test]
+    fn parse_tier2_is_case_sensitive_for_none_token() {
+        // Only the lowercase `none` collapses to an empty set. "NONE"
+        // passes through as a literal inert token — the outcome (every
+        // tier-2 tool refused) is the same as `none`, but the set is
+        // non-empty.
+        let set = parse_tier2("NONE");
+        assert_eq!(set.len(), 1);
+        assert!(set.contains("NONE"));
+        assert!(
+            !set.is_empty(),
+            "uppercase NONE must NOT trigger the empty-set branch"
+        );
+    }
+
+    #[test]
     fn parse_tier2_does_not_validate_names() {
         // Filtering of non-tier-2 names happens at check time (see
         // netdiag::commands::check_tier2). The parser keeps any non-empty

@@ -129,6 +129,12 @@ mod tests {
         let data = r.data.as_ref().expect("data payload");
         assert_eq!(data.get("command").and_then(|v| v.as_str()), Some("ping"));
         assert_eq!(data.get("tier").and_then(|v| v.as_i64()), Some(2));
+        // Regression guard: operator-facing UIs key off `enable_env` to
+        // surface the env var name. Lock the field name in.
+        assert_eq!(
+            data.get("enable_env").and_then(|v| v.as_str()),
+            Some("NETDIAG_ENABLE_TIER2"),
+        );
     }
 
     #[test]
