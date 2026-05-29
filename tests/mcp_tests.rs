@@ -394,12 +394,12 @@ async fn disabled_command_returns_not_allowed() {
     assert_eq!(rpc_error_code(&resp), -32011);
 }
 
-// ---- tier-2 gating: wire-level --------------------------------------------
+// ---- privileged gating: wire-level --------------------------------------------
 
-/// The six tier-2 tools (mirrors `netdiag::commands::TIER2_KEYS` but lives
+/// The six privileged tools (mirrors `netdiag::commands::PRIVILEGED_KEYS` but lives
 /// under the dotted MCP tool names). Kept inline so the wire test asserts
 /// the operator-facing names, not the internal command keys.
-const TIER2_TOOLS: &[&str] = &[
+const PRIVILEGED_TOOLS: &[&str] = &[
     "net.ping",
     "net.traceroute",
     "net.tcpdump_sample",
@@ -409,8 +409,8 @@ const TIER2_TOOLS: &[&str] = &[
 ];
 
 #[tokio::test]
-async fn tools_list_still_advertises_tier2_when_disabled() {
-    // Disabled tier-2 tools must remain visible in tools/list — mirrors the
+async fn tools_list_still_advertises_privileged_when_disabled() {
+    // Disabled privileged tools must remain visible in tools/list — mirrors the
     // existing NETDIAG_ALLOWLIST behavior. The refusal happens at call time.
     let server = NetdiagServer::new(CommandRunner::with_layers(None, &HashSet::new()), None);
     let responses = roundtrip(
@@ -425,7 +425,7 @@ async fn tools_list_still_advertises_tier2_when_disabled() {
     let tools = responses[1]["result"]["tools"]
         .as_array()
         .expect("tools array");
-    for name in TIER2_TOOLS {
+    for name in PRIVILEGED_TOOLS {
         assert!(
             tools.iter().any(|t| t["name"] == *name),
             "{name} must remain visible in tools/list even when disabled",
@@ -433,28 +433,28 @@ async fn tools_list_still_advertises_tier2_when_disabled() {
     }
 }
 
-/// The three wire-emitting tier-2 tools. Each call emits packets on the
+/// The three wire-emitting privileged tools. Each call emits packets on the
 /// network or toggles promiscuous mode, so they advertise
 /// `readOnlyHint = false` and `idempotentHint = false` per the MCP spec
 /// (no host config changes, but observable environmental effects exist).
-const TIER2_WIRE_EMITTERS: &[&str] = &["net.ping", "net.traceroute", "net.tcpdump_sample"];
+const PRIVILEGED_WIRE_EMITTERS: &[&str] = &["net.ping", "net.traceroute", "net.tcpdump_sample"];
 
-/// The three privileged-read tier-2 tools. They query local kernel state
+/// The three privileged-read privileged tools. They query local kernel state
 /// without emitting anything, so they keep `readOnlyHint = true` and
-/// `idempotentHint = true`. They are tier-2 only because of the
+/// `idempotentHint = true`. They are privileged only because of the
 /// capability requirement.
-const TIER2_PRIVILEGED_READS: &[&str] = &["net.firewall", "net.conntrack", "sys.dmesg"];
+const PRIVILEGED_KERNEL_READS: &[&str] = &["net.firewall", "net.conntrack", "sys.dmesg"];
 
 #[tokio::test]
-async fn tools_list_marks_tier2_in_description_and_open_world_hint() {
-    // Every tier-2 tool carries the "[Tier-2: <CAP>...]" description
+async fn tools_list_marks_privileged_in_description_and_open_world_hint() {
+    // Every privileged tool carries the "[Privileged: <CAP>...]" description
     // prefix, `openWorldHint = true`, and `destructiveHint = false`. The
     // readOnlyHint / idempotentHint split between wire-emitters and
     // privileged-reads is asserted in the two follow-up tests below.
     let server = NetdiagServer::new(
         CommandRunner::with_layers(
             None,
-            &[mcp_netdiag_rs::config::TIER2_ALL_SENTINEL.to_string()]
+            &[mcp_netdiag_rs::config::PRIVILEGED_ALL_SENTINEL.to_string()]
                 .into_iter()
                 .collect(),
         ),
@@ -472,15 +472,15 @@ async fn tools_list_marks_tier2_in_description_and_open_world_hint() {
     let tools = responses[1]["result"]["tools"]
         .as_array()
         .expect("tools array");
-    for name in TIER2_TOOLS {
+    for name in PRIVILEGED_TOOLS {
         let t = tools
             .iter()
             .find(|t| t["name"] == *name)
             .unwrap_or_else(|| panic!("{name} listed"));
         let desc = t["description"].as_str().unwrap_or_default();
         assert!(
-            desc.starts_with("[Tier-2:"),
-            "{name} description must carry the tier-2 capability marker: {desc:?}",
+            desc.starts_with("[Privileged:"),
+            "{name} description must carry the privileged capability marker: {desc:?}",
         );
         assert_eq!(
             t["annotations"]["openWorldHint"],
@@ -492,15 +492,15 @@ async fn tools_list_marks_tier2_in_description_and_open_world_hint() {
 }
 
 #[tokio::test]
-async fn tools_list_wire_emitting_tier2_tools_flip_read_only_and_idempotent_hints() {
+async fn tools_list_wire_emitting_privileged_tools_flip_read_only_and_idempotent_hints() {
     // ping / traceroute / tcpdump_sample emit packets or toggle promisc —
     // per MCP spec, readOnlyHint and idempotentHint must be false because
     // each call produces fresh observable effects. The decision is locked
-    // in SECURITY.md "Two-tier model"; this test is the regression guard.
+    // in SECURITY.md "Default vs privileged tool model"; regression guard.
     let server = NetdiagServer::new(
         CommandRunner::with_layers(
             None,
-            &[mcp_netdiag_rs::config::TIER2_ALL_SENTINEL.to_string()]
+            &[mcp_netdiag_rs::config::PRIVILEGED_ALL_SENTINEL.to_string()]
                 .into_iter()
                 .collect(),
         ),
@@ -518,7 +518,7 @@ async fn tools_list_wire_emitting_tier2_tools_flip_read_only_and_idempotent_hint
     let tools = responses[1]["result"]["tools"]
         .as_array()
         .expect("tools array");
-    for name in TIER2_WIRE_EMITTERS {
+    for name in PRIVILEGED_WIRE_EMITTERS {
         let t = tools
             .iter()
             .find(|t| t["name"] == *name)
@@ -537,15 +537,15 @@ async fn tools_list_wire_emitting_tier2_tools_flip_read_only_and_idempotent_hint
 }
 
 #[tokio::test]
-async fn tools_list_privileged_read_tier2_tools_keep_read_only_hints_true() {
+async fn tools_list_privileged_read_privileged_tools_keep_read_only_hints_true() {
     // firewall / conntrack / dmesg are pure reads of kernel state — they
-    // are tier-2 only because they need elevated caps. The MCP-spec
+    // are privileged only because they need elevated caps. The MCP-spec
     // readOnlyHint stays true; idempotentHint stays true (consecutive
     // calls have no additional effect on the environment).
     let server = NetdiagServer::new(
         CommandRunner::with_layers(
             None,
-            &[mcp_netdiag_rs::config::TIER2_ALL_SENTINEL.to_string()]
+            &[mcp_netdiag_rs::config::PRIVILEGED_ALL_SENTINEL.to_string()]
                 .into_iter()
                 .collect(),
         ),
@@ -563,7 +563,7 @@ async fn tools_list_privileged_read_tier2_tools_keep_read_only_hints_true() {
     let tools = responses[1]["result"]["tools"]
         .as_array()
         .expect("tools array");
-    for name in TIER2_PRIVILEGED_READS {
+    for name in PRIVILEGED_KERNEL_READS {
         let t = tools
             .iter()
             .find(|t| t["name"] == *name)
@@ -578,9 +578,9 @@ async fn tools_list_privileged_read_tier2_tools_keep_read_only_hints_true() {
 }
 
 #[tokio::test]
-async fn tools_list_tier1_advertises_closed_world_annotation() {
-    // Spot-check: a tier-1 tool advertises open_world_hint=false and has no
-    // tier-2 prefix in its description.
+async fn tools_list_default_tool_advertises_closed_world_annotation() {
+    // Spot-check: a default tool advertises open_world_hint=false and has no
+    // privileged prefix in its description.
     let server = stub_server();
     let responses = roundtrip(
         server,
@@ -602,16 +602,16 @@ async fn tools_list_tier1_advertises_closed_world_annotation() {
     assert!(!routes["description"]
         .as_str()
         .unwrap_or_default()
-        .starts_with("[Tier-2:"));
+        .starts_with("[Privileged:"));
 }
 
 #[tokio::test]
-async fn call_tier2_default_disabled_returns_tier2_message() {
-    // Default deployment: NETDIAG_ENABLE_TIER2 unset → empty opt-in set.
-    // Every tier-2 tool refuses with -32011, message mentions the env var.
-    for tool in TIER2_TOOLS {
+async fn call_privileged_default_disabled_returns_privileged_message() {
+    // Default deployment: NETDIAG_ENABLE_PRIVILEGED unset → empty opt-in set.
+    // Every privileged tool refuses with -32011, message mentions the env var.
+    for tool in PRIVILEGED_TOOLS {
         let server = NetdiagServer::new(CommandRunner::with_layers(None, &HashSet::new()), None);
-        let args = tier2_call_args(tool);
+        let args = privileged_call_args(tool);
         let resp = handshake_then_call(server, tool, args).await;
         assert_eq!(
             rpc_error_code(&resp),
@@ -622,25 +622,25 @@ async fn call_tier2_default_disabled_returns_tier2_message() {
             .as_str()
             .unwrap_or_else(|| panic!("error.message missing for {tool}: {resp}"));
         assert!(
-            msg.contains("NETDIAG_ENABLE_TIER2"),
+            msg.contains("NETDIAG_ENABLE_PRIVILEGED"),
             "{tool} refusal must surface the env-var hint, got: {msg}",
         );
     }
 }
 
 #[tokio::test]
-async fn call_tier2_subset_opts_in_only_listed_tool() {
-    // NETDIAG_ENABLE_TIER2=ping (one tool) → ping passes the tier-2 gate;
-    // the other five tier-2 tools still refuse with -32011.
-    let tier2: HashSet<String> = ["ping"].iter().map(|s| s.to_string()).collect();
+async fn call_privileged_subset_opts_in_only_listed_tool() {
+    // NETDIAG_ENABLE_PRIVILEGED=ping (one tool) → ping passes the privileged gate;
+    // the other five privileged tools still refuse with -32011.
+    let privileged: HashSet<String> = ["ping"].iter().map(|s| s.to_string()).collect();
 
     // ping passes the gate. The StubRunner-equivalent isn't usable here
     // (it skips gating), so we use the real runner; ping with target
     // 127.0.0.1 returns successfully on a Linux test host. We only assert
-    // the response is NOT a tier-2 refusal (status may be "ok" or "fail"
+    // the response is NOT a privileged refusal (status may be "ok" or "fail"
     // depending on host capabilities — the call reached past the gate).
     {
-        let server = NetdiagServer::new(CommandRunner::with_layers(None, &tier2), None);
+        let server = NetdiagServer::new(CommandRunner::with_layers(None, &privileged), None);
         let resp = handshake_then_call(
             server,
             "net.ping",
@@ -648,63 +648,63 @@ async fn call_tier2_subset_opts_in_only_listed_tool() {
         )
         .await;
         if let Some(err) = resp.get("error") {
-            // Only acceptable error here is a spawn/exec issue, NOT tier-2.
+            // Only acceptable error here is a spawn/exec issue, NOT privileged.
             let msg = err["message"].as_str().unwrap_or_default();
             assert!(
-                !msg.contains("NETDIAG_ENABLE_TIER2"),
-                "ping must pass tier-2 gate when opted in; got tier-2 refusal: {resp}",
+                !msg.contains("NETDIAG_ENABLE_PRIVILEGED"),
+                "ping must pass privileged gate when opted in; got privileged refusal: {resp}",
             );
         }
     }
 
-    // The other five tier-2 tools still refuse with tier-2 message.
-    for tool in TIER2_TOOLS.iter().filter(|t| **t != "net.ping") {
-        let server = NetdiagServer::new(CommandRunner::with_layers(None, &tier2), None);
-        let resp = handshake_then_call(server, tool, tier2_call_args(tool)).await;
+    // The other five privileged tools still refuse with privileged message.
+    for tool in PRIVILEGED_TOOLS.iter().filter(|t| **t != "net.ping") {
+        let server = NetdiagServer::new(CommandRunner::with_layers(None, &privileged), None);
+        let resp = handshake_then_call(server, tool, privileged_call_args(tool)).await;
         assert_eq!(rpc_error_code(&resp), -32011, "{tool} must still refuse");
         let msg = resp["error"]["message"].as_str().unwrap_or_default();
         assert!(
-            msg.contains("NETDIAG_ENABLE_TIER2"),
+            msg.contains("NETDIAG_ENABLE_PRIVILEGED"),
             "{tool} refusal must keep the env-var hint",
         );
     }
 }
 
 #[tokio::test]
-async fn call_tier2_all_sentinel_admits_every_tier2_tool() {
-    // NETDIAG_ENABLE_TIER2=all → every tier-2 tool passes the tier-2 gate.
+async fn call_privileged_all_sentinel_admits_every_privileged_tool() {
+    // NETDIAG_ENABLE_PRIVILEGED=all → every privileged tool passes the privileged gate.
     // We don't assert successful *execution* (the test host may lack
     // nft / conntrack / tcpdump / dmesg permissions); we only assert the
-    // response does NOT carry the tier-2 env-var hint, proving the gate
+    // response does NOT carry the privileged env-var hint, proving the gate
     // didn't fire. Parallel structure to
-    // `call_tier2_subset_opts_in_only_listed_tool` but for the `all`
+    // `call_privileged_subset_opts_in_only_listed_tool` but for the `all`
     // sentinel path.
-    let tier2: HashSet<String> = [mcp_netdiag_rs::config::TIER2_ALL_SENTINEL.to_string()]
+    let privileged: HashSet<String> = [mcp_netdiag_rs::config::PRIVILEGED_ALL_SENTINEL.to_string()]
         .into_iter()
         .collect();
-    for tool in TIER2_TOOLS {
-        let server = NetdiagServer::new(CommandRunner::with_layers(None, &tier2), None);
-        let resp = handshake_then_call(server, tool, tier2_call_args(tool)).await;
+    for tool in PRIVILEGED_TOOLS {
+        let server = NetdiagServer::new(CommandRunner::with_layers(None, &privileged), None);
+        let resp = handshake_then_call(server, tool, privileged_call_args(tool)).await;
         if let Some(err) = resp.get("error") {
             let msg = err["message"].as_str().unwrap_or_default();
             assert!(
-                !msg.contains("NETDIAG_ENABLE_TIER2"),
-                "{tool} must pass tier-2 gate under `all`; got tier-2 refusal: {resp}",
+                !msg.contains("NETDIAG_ENABLE_PRIVILEGED"),
+                "{tool} must pass privileged gate under `all`; got privileged refusal: {resp}",
             );
         }
     }
 }
 
 #[tokio::test]
-async fn call_tier2_allowlist_precedence_returns_command_not_allowed() {
-    // NETDIAG_ALLOWLIST narrowed to exclude ping + NETDIAG_ENABLE_TIER2=all
+async fn call_privileged_allowlist_precedence_returns_command_not_allowed() {
+    // NETDIAG_ALLOWLIST narrowed to exclude ping + NETDIAG_ENABLE_PRIVILEGED=all
     // → ping still refused, but with CommandNotAllowed (no env-var hint),
     // proving the allowlist takes precedence.
     let allow: HashSet<String> = ["routes"].iter().map(|s| s.to_string()).collect();
-    let tier2: HashSet<String> = [mcp_netdiag_rs::config::TIER2_ALL_SENTINEL.to_string()]
+    let privileged: HashSet<String> = [mcp_netdiag_rs::config::PRIVILEGED_ALL_SENTINEL.to_string()]
         .into_iter()
         .collect();
-    let server = NetdiagServer::new(CommandRunner::with_layers(Some(&allow), &tier2), None);
+    let server = NetdiagServer::new(CommandRunner::with_layers(Some(&allow), &privileged), None);
     let resp = handshake_then_call(
         server,
         "net.ping",
@@ -714,17 +714,17 @@ async fn call_tier2_allowlist_precedence_returns_command_not_allowed() {
     assert_eq!(rpc_error_code(&resp), -32011);
     let msg = resp["error"]["message"].as_str().unwrap_or_default();
     // CommandNotAllowed message format from errors.rs — does NOT mention
-    // the tier-2 env var (allowlist precedence proof).
+    // the privileged env var (allowlist precedence proof).
     assert!(
-        msg.contains("not allowed") && !msg.contains("NETDIAG_ENABLE_TIER2"),
-        "allowlist refusal must NOT surface tier-2 hint: {msg}",
+        msg.contains("not allowed") && !msg.contains("NETDIAG_ENABLE_PRIVILEGED"),
+        "allowlist refusal must NOT surface privileged hint: {msg}",
     );
 }
 
-/// Build the minimal valid argument payload for each tier-2 tool. Per-tool
+/// Build the minimal valid argument payload for each privileged tool. Per-tool
 /// because the param structs use `deny_unknown_fields` and several tools
 /// require an `interface` / `target` argument.
-fn tier2_call_args(tool: &str) -> Value {
+fn privileged_call_args(tool: &str) -> Value {
     match tool {
         "net.ping" => json!({"target": "127.0.0.1", "count": 1, "timeout_secs": 1}),
         "net.traceroute" => json!({"target": "127.0.0.1", "max_hops": 1}),

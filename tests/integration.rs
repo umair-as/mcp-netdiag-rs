@@ -27,14 +27,14 @@ struct Server {
 impl Server {
     fn spawn(journal: &Path) -> Self {
         // `CARGO_BIN_EXE_<name>` is injected by cargo for integration tests.
-        // `NETDIAG_ENABLE_TIER2=ping` opts in only the one tier-2 tool this
+        // `NETDIAG_ENABLE_PRIVILEGED=ping` opts in only the one privileged tool this
         // end-to-end test actually exercises (`net.ping 127.0.0.1`). The
-        // tier-2 *gating* itself is covered by the in-process suite in
+        // privileged *gating* itself is covered by the in-process suite in
         // `tests/mcp_tests.rs`; this test cares about the on-the-wire
         // result envelope through the compiled binary.
         let mut child = Command::new(env!("CARGO_BIN_EXE_mcp-netdiag-rs"))
             .env("NETDIAG_JOURNAL", journal)
-            .env("NETDIAG_ENABLE_TIER2", "ping")
+            .env("NETDIAG_ENABLE_PRIVILEGED", "ping")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

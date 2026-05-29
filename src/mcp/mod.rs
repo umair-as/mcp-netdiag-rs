@@ -269,7 +269,7 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// changes. See SECURITY.md for the rationale.
     #[tool(
         name = "net.ping",
-        description = "[Tier-2: CAP_NET_RAW] Bounded ping connectivity check against a target host.",
+        description = "[Privileged: CAP_NET_RAW] Bounded ping connectivity check against a target host.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -303,7 +303,7 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// but the wire is touched on every call.
     #[tool(
         name = "net.traceroute",
-        description = "[Tier-2: CAP_NET_RAW] Bounded traceroute path diagnosis to a target host.",
+        description = "[Privileged: CAP_NET_RAW] Bounded traceroute path diagnosis to a target host.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -415,7 +415,7 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// Firewall ruleset (`nft list ruleset`).
     #[tool(
         name = "net.firewall",
-        description = "[Tier-2: CAP_NET_ADMIN] Show nftables firewall ruleset.",
+        description = "[Privileged: CAP_NET_ADMIN] Show nftables firewall ruleset.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -435,7 +435,7 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// Connection tracking table (`conntrack -L`).
     #[tool(
         name = "net.conntrack",
-        description = "[Tier-2: CAP_NET_ADMIN] Show the connection tracking table.",
+        description = "[Privileged: CAP_NET_ADMIN] Show the connection tracking table.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,
@@ -462,7 +462,7 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// See SECURITY.md for the rationale.
     #[tool(
         name = "net.tcpdump_sample",
-        description = "[Tier-2: CAP_NET_RAW + CAP_NET_ADMIN] Capture a bounded packet sample on one interface.",
+        description = "[Privileged: CAP_NET_RAW + CAP_NET_ADMIN] Capture a bounded packet sample on one interface.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -568,7 +568,7 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// Kernel ring buffer (`dmesg -T`), bounded by output capture limits.
     #[tool(
         name = "sys.dmesg",
-        description = "[Tier-2: CAP_SYSLOG] Show kernel ring buffer messages.",
+        description = "[Privileged: CAP_SYSLOG] Show kernel ring buffer messages.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,

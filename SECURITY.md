@@ -85,12 +85,12 @@ persists between calls. Every `tools/call` is fire-and-forget. This
 removes a class of bugs (cross-call state confusion, leaked secrets in
 in-memory caches) by construction.
 
-## Two-tier tool model
+## Default vs privileged tool model
 
-The 24 tools split into two tiers along an operational, not a syntactic,
-boundary: what does the tool *do* on the host?
+The 24 tools split into two groups along an operational, not a
+syntactic, boundary: what does the tool *do* on the host?
 
-### Tier 1 — 18 tools, enabled by default
+### Default — 18 tools, enabled by default
 
 Pure reads of unprivileged Linux state. None require Linux capabilities
 beyond what an ordinary unprivileged user has on a modern systemd
@@ -117,12 +117,12 @@ distro. Safe to run autonomously.
 | `sys.memory` | `free -h` |
 | `sys.filesystems` | `df -h` |
 
-### Tier 2 — 6 tools, refused by default
+### Privileged — 6 tools, refused by default
 
 Either emit observable side effects on the wire / kernel, or require
 elevated Linux capabilities to run at all. The operator opts in
-per-deployment via `NETDIAG_ENABLE_TIER2`; with the env var unset, the
-server returns `-32011` for every tier-2 call and never spawns a
+per-deployment via `NETDIAG_ENABLE_PRIVILEGED`; with the env var unset, the
+server returns `-32011` for every privileged call and never spawns a
 subprocess.
 
 | Tool | Required cap | Side effect | Command |
@@ -139,26 +139,26 @@ subprocess.
 | Refusal reason | Variant | Code | Message includes |
 |---|---|---|---|
 | Tool not in `NETDIAG_ALLOWLIST` (or unknown key) | `CommandNotAllowed` | `-32011` | `"command not allowed: <key>"` |
-| Tool is tier-2 and not in `NETDIAG_ENABLE_TIER2` | `Tier2Disabled` | `-32011` | `"tier-2 tool disabled; set NETDIAG_ENABLE_TIER2=<key> or NETDIAG_ENABLE_TIER2=all to enable"` |
+| Tool is privileged and not in `NETDIAG_ENABLE_PRIVILEGED` | `PrivilegedDisabled` | `-32011` | `"privileged tool disabled; set NETDIAG_ENABLE_PRIVILEGED=<key> or NETDIAG_ENABLE_PRIVILEGED=all to enable"` |
 
 Both return `-32011` so client code can branch on a single error code,
-but the message and `data` payload differ. `Tier2Disabled`'s `data`
-carries `{command, tier: 2, enable_env: "NETDIAG_ENABLE_TIER2"}` so
-operator-facing UIs can surface the env-var hint.
+but the message and `data` payload differ. `PrivilegedDisabled`'s `data`
+carries `{command, privileged: true, enable_env: "NETDIAG_ENABLE_PRIVILEGED"}`
+so operator-facing UIs can surface the env-var hint.
 
 ### Composition with `NETDIAG_ALLOWLIST`
 
 The two filters are AND-ed. A tool runs iff:
 
 ```
-NETDIAG_ALLOWLIST admits it     AND     (it is tier-1 OR NETDIAG_ENABLE_TIER2 admits it)
+NETDIAG_ALLOWLIST admits it     AND     (it is not privileged OR NETDIAG_ENABLE_PRIVILEGED admits it)
 ```
 
-The allowlist is authoritative: a tier-2 opt-in cannot widen a narrower
+The allowlist is authoritative: a privileged opt-in cannot widen a narrower
 allowlist. Inside `CommandRunner::run` the order is fixed —
-`CommandNotAllowed` is checked first, `Tier2Disabled` second — so a
+`CommandNotAllowed` is checked first, `PrivilegedDisabled` second — so a
 tool absent from `NETDIAG_ALLOWLIST` always returns the generic
-not-allowed message, never the tier-2 message.
+not-allowed message, never the privileged-disabled message.
 
 ### MCP `ToolAnnotations` and why they are advisory
 
@@ -168,9 +168,9 @@ closed-world vs open-world). They are advertisement, not gating: the
 MCP spec is explicit that clients MUST consider annotations untrusted
 unless they come from a trusted server (and even then, no major client
 ships annotation-driven confirmation today). The enforcement gate is
-`NETDIAG_ENABLE_TIER2`.
+`NETDIAG_ENABLE_PRIVILEGED`.
 
-For tier-2 tools the annotation breakdown is:
+For privileged tools the annotation breakdown is:
 
 - **`net.ping`, `net.traceroute`, `net.tcpdump_sample`** — wire-emitters
   / state-togglers. `readOnlyHint = false`, `idempotentHint = false`,
@@ -180,23 +180,24 @@ For tier-2 tools the annotation breakdown is:
   configuration is still unchanged — these tools do not write files,
   edit routes, or change interface state — which is why the project's
   broader "read-only diagnostics" framing still holds.
-- **`net.firewall`, `net.conntrack`, `sys.dmesg`** — privileged reads.
+- **`net.firewall`, `net.conntrack`, `sys.dmesg`** — kernel-state reads.
   `readOnlyHint = true`, `idempotentHint = true`, `openWorldHint = true`.
   They query kernel state without emitting anything; the only reason
-  they are tier-2 is the capability requirement.
-- All tier-2 tools advertise `destructiveHint = false` — none of them
+  they are privileged is the capability requirement.
+- All privileged tools advertise `destructiveHint = false` — none of them
   destroy or overwrite anything. The audit journal records every call
   attempt regardless.
 
-The asymmetry was a deliberate decision: blanket-marking tier-2 as
-`readOnlyHint = true` would have been more convenient but misleading
-about the wire emitters. Hint truthfulness comes ahead of brevity.
+The asymmetry was a deliberate decision: blanket-marking every
+privileged tool `readOnlyHint = true` would have been more convenient
+but misleading about the wire emitters. Hint truthfulness comes ahead
+of brevity.
 
 ## Deployment guidance
 
-### Default deployment — tier-1 only
+### Default deployment — unprivileged
 
-Run as an unprivileged user. Every tier-1 tool works. Every tier-2 tool
+Run as an unprivileged user. Every default tool works. Every privileged tool
 refuses with `-32011`. No capabilities required.
 
 ```ini
@@ -207,7 +208,7 @@ User=netdiag
 DynamicUser=true
 NoNewPrivileges=true
 Environment=NETDIAG_JOURNAL=/var/log/mcp-netdiag/journal.jsonl
-# NETDIAG_ENABLE_TIER2 is unset → tier-2 tools refused
+# NETDIAG_ENABLE_PRIVILEGED is unset → privileged tools refused
 StandardInput=socket
 StandardOutput=socket
 
@@ -215,9 +216,9 @@ StandardOutput=socket
 WantedBy=multi-user.target
 ```
 
-### Opting in to tier-2 tools
+### Opting in to privileged tools
 
-Enable only the tier-2 tools the deployment needs, and grant only the
+Enable only the privileged tools the deployment needs, and grant only the
 capabilities those tools require. Example: gateway diagnostics that
 need `ping` and `traceroute` but not packet capture or kernel
 inspection:
@@ -230,20 +231,20 @@ DynamicUser=true
 NoNewPrivileges=true
 AmbientCapabilities=CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_RAW
-Environment=NETDIAG_ENABLE_TIER2=ping,traceroute
+Environment=NETDIAG_ENABLE_PRIVILEGED=ping,traceroute
 Environment=NETDIAG_JOURNAL=/var/log/mcp-netdiag/journal.jsonl
 ```
 
-For the full tier-2 set (packet sampling, firewall/conntrack
+For the full privileged set (packet sampling, firewall/conntrack
 inspection, kernel logs):
 
 ```ini
 AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN CAP_SYSLOG
 CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN CAP_SYSLOG
-Environment=NETDIAG_ENABLE_TIER2=all
+Environment=NETDIAG_ENABLE_PRIVILEGED=all
 ```
 
-If a tier-2 tool is enabled but the matching capability is missing, the
+If a privileged tool is enabled but the matching capability is missing, the
 underlying command fails at execution time — the result envelope
 carries `status: "fail"` rather than the protocol returning an error.
 
@@ -253,8 +254,8 @@ Every `tools/call` writes one `call` row and one `result` row to the
 JSONL journal at `NETDIAG_JOURNAL` (default
 `/tmp/mcp-netdiag-journal.jsonl`). Lifecycle traffic
 (`initialize`, `tools/list`) is not journaled. Refused calls — both
-`CommandNotAllowed` and `Tier2Disabled` — are captured with their
-pinned error code in the result row, so a tier-2 attempt against a
+`CommandNotAllowed` and `PrivilegedDisabled` — are captured with their
+pinned error code in the result row, so a privileged attempt against a
 default-closed deployment leaves a record.
 
 Quick tail of the last few denials:

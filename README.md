@@ -3,11 +3,11 @@
 A read-only MCP server for Linux network diagnostics. It exposes a small set
 of vetted, allowlisted commands as MCP tools so an MCP-capable assistant can
 inspect a host's live network state without being handed a shell. By default
-the server enables 18 unprivileged tier-1 reads (`ip`, `bridge`, `journalctl`,
+the server enables 18 unprivileged reads (`ip`, `bridge`, `journalctl`,
 `systemctl`, `ss`, `resolvectl`, `ethtool`, `df`, `free`, `uptime`); the six
-tier-2 tools that emit packets or need elevated capabilities (`ping`,
+privileged tools that emit packets or need elevated capabilities (`ping`,
 `traceroute`, `tcpdump`, `nft list ruleset`, `conntrack -L`, `dmesg`) are
-refused until the operator opts in via `NETDIAG_ENABLE_TIER2` — see
+refused until the operator opts in via `NETDIAG_ENABLE_PRIVILEGED` — see
 [Security Model](#security-model). Runs on any Linux host with the standard
 `iproute2` / `ping` / `traceroute` / `systemd` userspace.
 
@@ -111,32 +111,32 @@ expect a command-timeout tool error if no packets arrive.
 
 ## Security Model
 
-The 24 tools split into two tiers. The split determines what runs by
-default; both tiers share the compile-time command allowlist, the
+The 24 tools split into two groups. The split determines what runs by
+default; both groups share the compile-time command allowlist, the
 per-token validators, the wall-clock timeout, and the output bounds
 described in [SECURITY.md](SECURITY.md).
 
-- **Tier 1 — 18 tools, enabled by default.** Pure reads of
+- **Default — 18 tools, enabled out of the box.** Pure reads of
   unprivileged Linux state: `ip` / `ss` / `resolvectl` / `systemctl` /
-  `df` / `free` / `journalctl` / `ethtool` and friends. No
-  capabilities required; safe to run as an unprivileged user.
-- **Tier 2 — 6 tools, refused by default.** Either emit observable
+  `df` / `free` / `journalctl` / `ethtool` and friends. No capabilities
+  required; safe to run as an unprivileged user.
+- **Privileged — 6 tools, refused by default.** Either emit observable
   side effects on the wire (`net.ping` and `net.traceroute` need
   `CAP_NET_RAW`; `net.tcpdump_sample` needs
   `CAP_NET_RAW + CAP_NET_ADMIN` and toggles promiscuous mode on the
   capture interface) or require elevated capabilities to read kernel
   state (`net.firewall` / `net.conntrack` need `CAP_NET_ADMIN`;
   `sys.dmesg` needs `CAP_SYSLOG` when `kernel.dmesg_restrict=1`).
-  The operator opts in per-deployment via `NETDIAG_ENABLE_TIER2`
+  The operator opts in per-deployment via `NETDIAG_ENABLE_PRIVILEGED`
   (see [Configuration](#configuration)). With the env var unset,
-  every tier-2 call returns `-32011` and never spawns a subprocess.
+  every privileged call returns `-32011` and never spawns a subprocess.
 
-The two opt-ins compose by AND: a tier-2 opt-in cannot widen a
+The two opt-ins compose by AND: a privileged opt-in cannot widen a
 narrower `NETDIAG_ALLOWLIST`. If a tool is not in the allowlist, no
 env var can make it run.
 
 See [SECURITY.md](SECURITY.md) for the threat model, the full per-tool
-capability table, and a systemd unit recipe for tier-2 deployments.
+capability table, and a systemd unit recipe for privileged deployments.
 
 ## Configuration
 
@@ -149,11 +149,11 @@ Environment variables:
   the mapping table above. When set, only the listed commands are runnable.
   This is a *narrowing* filter — it can only disable built-in commands, never
   add programs or arguments.
-- `NETDIAG_ENABLE_TIER2` — opt-in for the six tier-2 tools (see [Security
+- `NETDIAG_ENABLE_PRIVILEGED` — opt-in for the six privileged tools (see [Security
   Model](#security-model)). Accepts a comma-separated subset of
   `{ping, traceroute, tcpdump_sample, firewall, conntrack, dmesg}`, the
   literal `all`, or `none` / empty / unset. Case-sensitive. Default: unset
-  → no tier-2 tools enabled. Composes with `NETDIAG_ALLOWLIST` by AND;
+  → no privileged tools enabled. Composes with `NETDIAG_ALLOWLIST` by AND;
   cannot widen the allowlist.
 - `RUST_LOG` — `tracing` filter (default `mcp_netdiag_rs=info`); logs go to
   stderr, never stdout.

@@ -9,8 +9,8 @@
 //! - `NETDIAG_JOURNAL`     → path to the JSONL audit journal ([`journal_path`])
 //! - `NETDIAG_ALLOWLIST`   → narrowing filter over the built-in command set
 //!   ([`enabled_commands`])
-//! - `NETDIAG_ENABLE_TIER2` → opt-in for the six tier-2 tools that require
-//!   elevated Linux capabilities or have on-wire side effects ([`tier2_enabled`])
+//! - `NETDIAG_ENABLE_PRIVILEGED` → opt-in for the six privileged tools that require
+//!   elevated Linux capabilities or have on-wire side effects ([`privileged_enabled`])
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -89,41 +89,41 @@ fn parse_allowlist(raw: &str) -> HashSet<String> {
         .collect()
 }
 
-/// Env var that opts in to the six tier-2 tools. Unlike [`ALLOWLIST_ENV`]
-/// which defaults *open*, this defaults *closed*: tier-2 tools (those
+/// Env var that opts in to the six privileged tools. Unlike [`ALLOWLIST_ENV`]
+/// which defaults *open*, this defaults *closed*: privileged tools (those
 /// requiring CAP_NET_RAW / CAP_NET_ADMIN / CAP_SYSLOG or that emit packets
 /// on the wire) refuse to run unless the operator explicitly enables them.
 ///
 /// Accepted forms:
-/// - unset / empty / `none` → empty set (every tier-2 tool refused)
-/// - `all` (case-sensitive) → every tier-2 tool enabled
-/// - comma-separated list of tier-2 tool keys (e.g. `ping,traceroute`);
-///   unknown or non-tier-2 names are silently ignored at check time
+/// - unset / empty / `none` → empty set (every privileged tool refused)
+/// - `all` (case-sensitive) → every privileged tool enabled
+/// - comma-separated list of privileged tool keys (e.g. `ping,traceroute`);
+///   unknown or non-privileged names are silently ignored at check time
 ///
-/// Composition with [`ALLOWLIST_ENV`]: a tier-2 tool runs iff it is *also*
+/// Composition with [`ALLOWLIST_ENV`]: a privileged tool runs iff it is *also*
 /// admitted by `NETDIAG_ALLOWLIST` — the allowlist takes precedence and a
-/// tier-2 opt-in cannot widen it.
-pub const TIER2_ENABLE_ENV: &str = "NETDIAG_ENABLE_TIER2";
+/// privileged opt-in cannot widen it.
+pub const PRIVILEGED_ENABLE_ENV: &str = "NETDIAG_ENABLE_PRIVILEGED";
 
-/// Sentinel value in [`TIER2_ENABLE_ENV`] meaning "every tier-2 tool". Kept
-/// as a literal in the returned set; resolution against the tier-2 key list
+/// Sentinel value in [`PRIVILEGED_ENABLE_ENV`] meaning "every privileged tool". Kept
+/// as a literal in the returned set; resolution against the privileged key list
 /// lives in [`crate::netdiag::commands`] so this module stays unaware of the
-/// concrete tier-2 keys.
-pub const TIER2_ALL_SENTINEL: &str = "all";
+/// concrete privileged keys.
+pub const PRIVILEGED_ALL_SENTINEL: &str = "all";
 
-/// The tier-2 opt-in set, parsed from [`TIER2_ENABLE_ENV`]. Returns an
-/// empty set (the default, "all tier-2 disabled") when the variable is
+/// The privileged opt-in set, parsed from [`PRIVILEGED_ENABLE_ENV`]. Returns an
+/// empty set (the default, "all privileged disabled") when the variable is
 /// unset, empty, whitespace-only, or `none`.
-pub fn tier2_enabled() -> HashSet<String> {
-    std::env::var(TIER2_ENABLE_ENV)
+pub fn privileged_enabled() -> HashSet<String> {
+    std::env::var(PRIVILEGED_ENABLE_ENV)
         .ok()
-        .map(|raw| parse_tier2(&raw))
+        .map(|raw| parse_privileged(&raw))
         .unwrap_or_default()
 }
 
-/// Pure parser for [`TIER2_ENABLE_ENV`]. Kept side-effect-free so it can be
+/// Pure parser for [`PRIVILEGED_ENABLE_ENV`]. Kept side-effect-free so it can be
 /// unit tested without touching the process environment.
-fn parse_tier2(raw: &str) -> HashSet<String> {
+fn parse_privileged(raw: &str) -> HashSet<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed == "none" {
         return HashSet::new();
@@ -164,22 +164,22 @@ mod tests {
     }
 
     #[test]
-    fn parse_tier2_empty_or_none_is_empty_set() {
-        assert!(parse_tier2("").is_empty());
-        assert!(parse_tier2("   ").is_empty());
-        assert!(parse_tier2("none").is_empty());
+    fn parse_privileged_empty_or_none_is_empty_set() {
+        assert!(parse_privileged("").is_empty());
+        assert!(parse_privileged("   ").is_empty());
+        assert!(parse_privileged("none").is_empty());
     }
 
     #[test]
-    fn parse_tier2_all_keeps_sentinel_literal() {
-        let set = parse_tier2("all");
+    fn parse_privileged_all_keeps_sentinel_literal() {
+        let set = parse_privileged("all");
         assert_eq!(set.len(), 1);
-        assert!(set.contains(TIER2_ALL_SENTINEL));
+        assert!(set.contains(PRIVILEGED_ALL_SENTINEL));
     }
 
     #[test]
-    fn parse_tier2_subset_returns_listed_keys_verbatim() {
-        let set = parse_tier2("ping, traceroute ,dmesg");
+    fn parse_privileged_subset_returns_listed_keys_verbatim() {
+        let set = parse_privileged("ping, traceroute ,dmesg");
         assert_eq!(set.len(), 3);
         assert!(set.contains("ping"));
         assert!(set.contains("traceroute"));
@@ -187,42 +187,42 @@ mod tests {
     }
 
     #[test]
-    fn parse_tier2_drops_empty_entries() {
-        let set = parse_tier2("ping,, ,,dmesg,");
+    fn parse_privileged_drops_empty_entries() {
+        let set = parse_privileged("ping,, ,,dmesg,");
         assert_eq!(set.len(), 2);
     }
 
     #[test]
-    fn parse_tier2_is_case_sensitive_for_all_sentinel() {
+    fn parse_privileged_is_case_sensitive_for_all_sentinel() {
         // The "all" sentinel is matched at check time against the literal
-        // lowercase `TIER2_ALL_SENTINEL`. parse_tier2 returns tokens
+        // lowercase `PRIVILEGED_ALL_SENTINEL`. parse_privileged returns tokens
         // verbatim, so "ALL" lands in the set but is inert — it never
-        // triggers the sentinel branch and matches no tier-2 key. Locks
+        // triggers the sentinel branch and matches no privileged key. Locks
         // in the case-sensitive contract documented in README.
-        let upper = parse_tier2("ALL");
+        let upper = parse_privileged("ALL");
         assert_eq!(upper.len(), 1);
         assert!(upper.contains("ALL"));
         assert!(
-            !upper.contains(TIER2_ALL_SENTINEL),
+            !upper.contains(PRIVILEGED_ALL_SENTINEL),
             "uppercase ALL must NOT collapse to the all-sentinel literal",
         );
 
         // End-to-end: pipe the resulting set through the downstream gate
-        // and assert tier-2 tools are still refused. Closes the
+        // and assert privileged tools are still refused. Closes the
         // inert-ness claim from the parser side through to the runner.
         assert!(matches!(
-            crate::netdiag::commands::check_tier2("ping", &upper),
-            Err(crate::errors::NetdiagError::Tier2Disabled { .. }),
+            crate::netdiag::commands::check_privileged("ping", &upper),
+            Err(crate::errors::NetdiagError::PrivilegedDisabled { .. }),
         ));
     }
 
     #[test]
-    fn parse_tier2_is_case_sensitive_for_none_token() {
+    fn parse_privileged_is_case_sensitive_for_none_token() {
         // Only the lowercase `none` collapses to an empty set. "NONE"
         // passes through as a literal inert token — the outcome (every
-        // tier-2 tool refused) is the same as `none`, but the set is
+        // privileged tool refused) is the same as `none`, but the set is
         // non-empty.
-        let set = parse_tier2("NONE");
+        let set = parse_privileged("NONE");
         assert_eq!(set.len(), 1);
         assert!(set.contains("NONE"));
         assert!(
@@ -231,21 +231,21 @@ mod tests {
         );
 
         // End-to-end: a set containing only the inert "NONE" token still
-        // refuses every tier-2 tool — the outcome matches lowercase
+        // refuses every privileged tool — the outcome matches lowercase
         // `none`'s empty-set branch, just by a different path.
         assert!(matches!(
-            crate::netdiag::commands::check_tier2("ping", &set),
-            Err(crate::errors::NetdiagError::Tier2Disabled { .. }),
+            crate::netdiag::commands::check_privileged("ping", &set),
+            Err(crate::errors::NetdiagError::PrivilegedDisabled { .. }),
         ));
     }
 
     #[test]
-    fn parse_tier2_does_not_validate_names() {
-        // Filtering of non-tier-2 names happens at check time (see
-        // netdiag::commands::check_tier2). The parser keeps any non-empty
+    fn parse_privileged_does_not_validate_names() {
+        // Filtering of non-privileged names happens at check time (see
+        // netdiag::commands::check_privileged). The parser keeps any non-empty
         // token, so an operator-side typo like "pign" lands in the set but
-        // is inert because no tier-2 key matches it.
-        let set = parse_tier2("ping,bogus,routes");
+        // is inert because no privileged key matches it.
+        let set = parse_privileged("ping,bogus,routes");
         assert_eq!(set.len(), 3);
         assert!(set.contains("bogus"));
     }

@@ -21,10 +21,10 @@ pub enum NetdiagError {
     CommandNotAllowed { command: String },
 
     #[error(
-        "tier-2 tool disabled; set NETDIAG_ENABLE_TIER2={key} or \
-         NETDIAG_ENABLE_TIER2=all to enable"
+        "privileged tool disabled; set NETDIAG_ENABLE_PRIVILEGED={key} or \
+         NETDIAG_ENABLE_PRIVILEGED=all to enable"
     )]
-    Tier2Disabled { key: String },
+    PrivilegedDisabled { key: String },
 
     #[error("command execution failed: {message}")]
     CommandExec { message: String },
@@ -34,14 +34,16 @@ impl NetdiagError {
     /// Unique JSON-RPC error code for this variant. All codes live inside
     /// the reserved server-defined range (-32000..=-32099).
     ///
-    /// `Tier2Disabled` shares -32011 with `CommandNotAllowed` by design: a
-    /// tier-2 refusal is a kind of "command not allowed" with extra operator
+    /// `PrivilegedDisabled` shares -32011 with `CommandNotAllowed` by design: a
+    /// privileged refusal is a kind of "command not allowed" with extra operator
     /// guidance in the message + `data` payload, not a new failure class for
     /// clients to branch on.
     pub fn code(&self) -> i32 {
         match self {
             NetdiagError::InvalidParam { .. } => -32010,
-            NetdiagError::CommandNotAllowed { .. } | NetdiagError::Tier2Disabled { .. } => -32011,
+            NetdiagError::CommandNotAllowed { .. } | NetdiagError::PrivilegedDisabled { .. } => {
+                -32011
+            }
             NetdiagError::CommandExec { .. } => -32012,
         }
     }
@@ -53,10 +55,10 @@ impl NetdiagError {
                 json!({ "name": name, "reason": reason })
             }
             NetdiagError::CommandNotAllowed { command } => json!({ "command": command }),
-            NetdiagError::Tier2Disabled { key } => json!({
+            NetdiagError::PrivilegedDisabled { key } => json!({
                 "command": key,
-                "tier": 2,
-                "enable_env": "NETDIAG_ENABLE_TIER2",
+                "privileged": true,
+                "enable_env": "NETDIAG_ENABLE_PRIVILEGED",
             }),
             NetdiagError::CommandExec { message } => json!({ "message": message }),
         }
@@ -81,7 +83,7 @@ mod tests {
 
     #[test]
     fn error_codes_are_unique_and_in_reserved_range() {
-        // Tier2Disabled deliberately shares -32011 with CommandNotAllowed and
+        // PrivilegedDisabled deliberately shares -32011 with CommandNotAllowed and
         // is excluded from this uniqueness check.
         let codes = [
             NetdiagError::InvalidParam {
@@ -111,29 +113,29 @@ mod tests {
     }
 
     #[test]
-    fn tier2_disabled_shares_command_not_allowed_code() {
-        let err = NetdiagError::Tier2Disabled { key: "ping".into() };
+    fn privileged_disabled_shares_command_not_allowed_code() {
+        let err = NetdiagError::PrivilegedDisabled { key: "ping".into() };
         assert_eq!(err.code(), -32011);
     }
 
     #[test]
-    fn tier2_disabled_maps_to_rmcp_with_env_hint_in_data() {
-        let err = NetdiagError::Tier2Disabled { key: "ping".into() };
+    fn privileged_disabled_maps_to_rmcp_with_env_hint_in_data() {
+        let err = NetdiagError::PrivilegedDisabled { key: "ping".into() };
         let r: rmcp::ErrorData = err.into();
         assert_eq!(r.code, rmcp::model::ErrorCode(-32011));
         assert!(
-            r.message.contains("NETDIAG_ENABLE_TIER2"),
+            r.message.contains("NETDIAG_ENABLE_PRIVILEGED"),
             "message must surface the env var: {}",
             r.message
         );
         let data = r.data.as_ref().expect("data payload");
         assert_eq!(data.get("command").and_then(|v| v.as_str()), Some("ping"));
-        assert_eq!(data.get("tier").and_then(|v| v.as_i64()), Some(2));
+        assert_eq!(data.get("privileged").and_then(|v| v.as_bool()), Some(true));
         // Regression guard: operator-facing UIs key off `enable_env` to
         // surface the env var name. Lock the field name in.
         assert_eq!(
             data.get("enable_env").and_then(|v| v.as_str()),
-            Some("NETDIAG_ENABLE_TIER2"),
+            Some("NETDIAG_ENABLE_PRIVILEGED"),
         );
     }
 
