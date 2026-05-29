@@ -1,11 +1,15 @@
 # mcp-netdiag-rs
 
 A read-only MCP server for Linux network diagnostics. It exposes a small set
-of vetted, allowlisted commands (`ip`, `bridge`, `ping`, `traceroute`,
-`journalctl`, `systemctl`, `ss`, `ethtool`, `nft`, `conntrack`, `tcpdump`,
-and small system probes) as MCP tools, so an MCP-capable assistant can inspect a host's
-live network state without being handed a shell. It runs on any Linux host
-with the standard `iproute2` / `ping` / `traceroute` / `systemd` userspace.
+of vetted, allowlisted commands as MCP tools so an MCP-capable assistant can
+inspect a host's live network state without being handed a shell. By default
+the server enables 18 unprivileged tier-1 reads (`ip`, `bridge`, `journalctl`,
+`systemctl`, `ss`, `resolvectl`, `ethtool`, `df`, `free`, `uptime`); the six
+tier-2 tools that emit packets or need elevated capabilities (`ping`,
+`traceroute`, `tcpdump`, `nft list ruleset`, `conntrack -L`, `dmesg`) are
+refused until the operator opts in via `NETDIAG_ENABLE_TIER2` — see
+[Security Model](#security-model). Runs on any Linux host with the standard
+`iproute2` / `ping` / `traceroute` / `systemd` userspace.
 
 ## Problem It Solves
 
@@ -117,10 +121,11 @@ described in [SECURITY.md](SECURITY.md).
   `df` / `free` / `journalctl` / `ethtool` and friends. No
   capabilities required; safe to run as an unprivileged user.
 - **Tier 2 — 6 tools, refused by default.** Either emit observable
-  side effects on the wire (`net.ping`, `net.traceroute`,
-  `net.tcpdump_sample`) or require elevated Linux capabilities to
-  read kernel state (`net.firewall` / `net.conntrack` need
-  `CAP_NET_ADMIN`, `net.tcpdump_sample` also needs `CAP_NET_RAW`,
+  side effects on the wire (`net.ping` and `net.traceroute` need
+  `CAP_NET_RAW`; `net.tcpdump_sample` needs
+  `CAP_NET_RAW + CAP_NET_ADMIN` and toggles promiscuous mode on the
+  capture interface) or require elevated capabilities to read kernel
+  state (`net.firewall` / `net.conntrack` need `CAP_NET_ADMIN`;
   `sys.dmesg` needs `CAP_SYSLOG` when `kernel.dmesg_restrict=1`).
   The operator opts in per-deployment via `NETDIAG_ENABLE_TIER2`
   (see [Configuration](#configuration)). With the env var unset,

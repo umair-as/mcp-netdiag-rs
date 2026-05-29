@@ -394,9 +394,13 @@ impl CommandExecutor for CommandRunner {
 /// runner or env-var state.
 ///
 /// A `tier2_enabled` entry equal to [`crate::config::TIER2_ALL_SENTINEL`]
-/// passes every tier-2 key. Other entries are matched literally — typos
-/// and non-tier-2 names are inert because no tier-2 key matches them.
-fn check_tier2(key: &str, tier2_enabled: &HashSet<String>) -> Result<(), NetdiagError> {
+/// passes every tier-2 key. Other entries are matched literally — typos,
+/// non-tier-2 names, and case-variants of the sentinel (`ALL`, `All`)
+/// are inert because nothing in the matchable set is uppercase.
+///
+/// `pub(crate)` so [`crate::config`] tests can pipe `parse_tier2` output
+/// through this function to assert the parser/check contract end-to-end.
+pub(crate) fn check_tier2(key: &str, tier2_enabled: &HashSet<String>) -> Result<(), NetdiagError> {
     if !TIER2_KEYS.contains(&key) {
         return Ok(());
     }

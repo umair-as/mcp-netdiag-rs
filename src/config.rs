@@ -206,6 +206,14 @@ mod tests {
             !upper.contains(TIER2_ALL_SENTINEL),
             "uppercase ALL must NOT collapse to the all-sentinel literal",
         );
+
+        // End-to-end: pipe the resulting set through the downstream gate
+        // and assert tier-2 tools are still refused. Closes the
+        // inert-ness claim from the parser side through to the runner.
+        assert!(matches!(
+            crate::netdiag::commands::check_tier2("ping", &upper),
+            Err(crate::errors::NetdiagError::Tier2Disabled { .. }),
+        ));
     }
 
     #[test]
@@ -221,6 +229,14 @@ mod tests {
             !set.is_empty(),
             "uppercase NONE must NOT trigger the empty-set branch"
         );
+
+        // End-to-end: a set containing only the inert "NONE" token still
+        // refuses every tier-2 tool — the outcome matches lowercase
+        // `none`'s empty-set branch, just by a different path.
+        assert!(matches!(
+            crate::netdiag::commands::check_tier2("ping", &set),
+            Err(crate::errors::NetdiagError::Tier2Disabled { .. }),
+        ));
     }
 
     #[test]
