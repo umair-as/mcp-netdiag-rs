@@ -2,3 +2,6 @@
 # each have their own build directory.
 target/
 **/*.rs.bk
+
+# Local cross-compile linker/rustflags config — not repo content.
+.cargo/
