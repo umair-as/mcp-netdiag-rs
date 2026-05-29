@@ -105,6 +105,34 @@ transport failure.
 server command timeout expires. On idle interfaces, prefer a small `count` and
 expect a command-timeout tool error if no packets arrive.
 
+## Security Model
+
+The 24 tools split into two tiers. The split determines what runs by
+default; both tiers share the compile-time command allowlist, the
+per-token validators, the wall-clock timeout, and the output bounds
+described in [SECURITY.md](SECURITY.md).
+
+- **Tier 1 — 18 tools, enabled by default.** Pure reads of
+  unprivileged Linux state: `ip` / `ss` / `resolvectl` / `systemctl` /
+  `df` / `free` / `journalctl` / `ethtool` and friends. No
+  capabilities required; safe to run as an unprivileged user.
+- **Tier 2 — 6 tools, refused by default.** Either emit observable
+  side effects on the wire (`net.ping`, `net.traceroute`,
+  `net.tcpdump_sample`) or require elevated Linux capabilities to
+  read kernel state (`net.firewall` / `net.conntrack` need
+  `CAP_NET_ADMIN`, `net.tcpdump_sample` also needs `CAP_NET_RAW`,
+  `sys.dmesg` needs `CAP_SYSLOG` when `kernel.dmesg_restrict=1`).
+  The operator opts in per-deployment via `NETDIAG_ENABLE_TIER2`
+  (see [Configuration](#configuration)). With the env var unset,
+  every tier-2 call returns `-32011` and never spawns a subprocess.
+
+The two opt-ins compose by AND: a tier-2 opt-in cannot widen a
+narrower `NETDIAG_ALLOWLIST`. If a tool is not in the allowlist, no
+env var can make it run.
+
+See [SECURITY.md](SECURITY.md) for the threat model, the full per-tool
+capability table, and a systemd unit recipe for tier-2 deployments.
+
 ## Configuration
 
 Environment variables:
@@ -116,6 +144,12 @@ Environment variables:
   the mapping table above. When set, only the listed commands are runnable.
   This is a *narrowing* filter — it can only disable built-in commands, never
   add programs or arguments.
+- `NETDIAG_ENABLE_TIER2` — opt-in for the six tier-2 tools (see [Security
+  Model](#security-model)). Accepts a comma-separated subset of
+  `{ping, traceroute, tcpdump_sample, firewall, conntrack, dmesg}`, the
+  literal `all`, or `none` / empty / unset. Case-sensitive. Default: unset
+  → no tier-2 tools enabled. Composes with `NETDIAG_ALLOWLIST` by AND;
+  cannot widen the allowlist.
 - `RUST_LOG` — `tracing` filter (default `mcp_netdiag_rs=info`); logs go to
   stderr, never stdout.
 

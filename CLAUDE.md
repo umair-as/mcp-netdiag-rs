@@ -81,34 +81,42 @@ Architecture constraint: keep the `mcp/` rmcp adapter separate from the
 ## 4  MCP tool surface
 
 Tool names and field shapes are stable — do not rename or reshape them.
-All tools are read-only.
+All tools are read-only w.r.t. host configuration: nothing edits a
+route, mutates a unit, or writes a file. Three tier-2 tools
+(`net.ping`, `net.traceroute`, `net.tcpdump_sample`) do emit observable
+side effects on the wire / toggle promisc — see SECURITY.md for the
+finer distinction and how it shapes the `ToolAnnotations` they
+advertise.
 
-| Tool | Params | Command |
-|---|---|---|
-| `net.if_status` | `{interface?}` | `ip -j -s link show [dev <iface>]` |
-| `net.mac_lookup` | `{mac}` | `bridge -j fdb show to <mac>` |
-| `net.neighbors` | `{interface?}` | `ip -j neigh show [dev <iface>]` |
-| `net.routes` | — | `ip -j route show table all` |
-| `net.addr` | `{interface?}` | `ip -j addr show [dev <iface>]` |
-| `net.link_detail` | `{interface?}` | `ip -j -d link show [dev <iface>]` |
-| `net.route_get` | `{target}` | `ip -j route get <target>` |
-| `net.rules` | — | `ip -j rule show` |
-| `net.ping` | `{target, count?, timeout_secs?}` | `ping -n -c <1..10> -W <1..5> <target>` |
-| `net.traceroute` | `{target, max_hops?}` | `traceroute -n -m <1..30> <target>` |
-| `net.sockets` | — | `ss -H -tuna` |
-| `net.dns_status` | — | `resolvectl status` |
-| `net.resolv_conf` | — | read `/etc/resolv.conf` |
-| `net.ethtool` | `{interface}` | `ethtool <interface>` |
-| `net.firewall` | — | `nft list ruleset` |
-| `net.conntrack` | — | `conntrack -L` |
-| `net.tcpdump_sample` | `{interface, count?}` | `tcpdump -nn -i <interface> -c <1..50>` |
-| `net.logs` | `{lines?, unit?}` | `journalctl --no-pager --output=short-iso -n <1..200> [-u <unit>]` |
-| `sys.failed_units` | — | `systemctl --failed --no-pager --plain` |
-| `sys.service_status` | `{unit, lines?}` | `systemctl status --no-pager --lines <1..200> <unit>` |
-| `sys.dmesg` | — | `dmesg -T` |
-| `sys.uptime` | — | `uptime` |
-| `sys.memory` | — | `free -h` |
-| `sys.filesystems` | — | `df -h` |
+The `Tier` column captures the gating model in §6: tier-1 runs by
+default, tier-2 requires `NETDIAG_ENABLE_TIER2` opt-in.
+
+| Tier | Tool | Params | Command |
+|---|---|---|---|
+| 1 | `net.if_status` | `{interface?}` | `ip -j -s link show [dev <iface>]` |
+| 1 | `net.mac_lookup` | `{mac}` | `bridge -j fdb show to <mac>` |
+| 1 | `net.neighbors` | `{interface?}` | `ip -j neigh show [dev <iface>]` |
+| 1 | `net.routes` | — | `ip -j route show table all` |
+| 1 | `net.addr` | `{interface?}` | `ip -j addr show [dev <iface>]` |
+| 1 | `net.link_detail` | `{interface?}` | `ip -j -d link show [dev <iface>]` |
+| 1 | `net.route_get` | `{target}` | `ip -j route get <target>` |
+| 1 | `net.rules` | — | `ip -j rule show` |
+| **2** | `net.ping` | `{target, count?, timeout_secs?}` | `ping -n -c <1..10> -W <1..5> <target>` |
+| **2** | `net.traceroute` | `{target, max_hops?}` | `traceroute -n -m <1..30> <target>` |
+| 1 | `net.sockets` | — | `ss -H -tuna` |
+| 1 | `net.dns_status` | — | `resolvectl status` |
+| 1 | `net.resolv_conf` | — | read `/etc/resolv.conf` |
+| 1 | `net.ethtool` | `{interface}` | `ethtool <interface>` |
+| **2** | `net.firewall` | — | `nft list ruleset` |
+| **2** | `net.conntrack` | — | `conntrack -L` |
+| **2** | `net.tcpdump_sample` | `{interface, count?}` | `tcpdump -nn -i <interface> -c <1..50>` |
+| 1 | `net.logs` | `{lines?, unit?}` | `journalctl --no-pager --output=short-iso -n <1..200> [-u <unit>]` |
+| 1 | `sys.failed_units` | — | `systemctl --failed --no-pager --plain` |
+| 1 | `sys.service_status` | `{unit, lines?}` | `systemctl status --no-pager --lines <1..200> <unit>` |
+| **2** | `sys.dmesg` | — | `dmesg -T` |
+| 1 | `sys.uptime` | — | `uptime` |
+| 1 | `sys.memory` | — | `free -h` |
+| 1 | `sys.filesystems` | — | `df -h` |
 
 - Dotted tool names stay (no rename to `net_ping`).
 - Every tool returns a structured envelope:
@@ -120,6 +128,9 @@ All tools are read-only.
   rmcp SDK does not reject unknown arguments for a paramless tool. Tools
   with a param struct reject unknown fields (`deny_unknown_fields`) →
   `-32602`.
+- Tier-2 source of truth: `TIER2_KEYS` in `src/netdiag/commands.rs`. If
+  you add or remove a tier-2 tool, update that constant AND the §6
+  env-var table AND SECURITY.md's two-tier table.
 
 ## 5  Statelessness
 
