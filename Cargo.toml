@@ -3,6 +3,9 @@ name = "mcp-netdiag-rs"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+description = "Stateless MCP server exposing read-only Linux network and system diagnostics over stdio."
+repository = "https://github.com/umair-as/mcp-netdiag-rs"
+readme = "README.md"
 # MSRV raised to 1.85 to accept rmcp 1.7's edition-2024 dependency chain
 # (rmcp is built with edition 2024 but only requires a 1.85+ compiler from
 # its consumers). Edition 2021 is retained for this crate.
