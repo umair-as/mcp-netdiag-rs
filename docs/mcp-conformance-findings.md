@@ -7,8 +7,7 @@ the current implementation in `src/mcp`, `src/netdiag`, and tests.
 
 ## Summary
 
-`mcp-netdiag-rs` is already more MCP-native than the serial server in several
-areas:
+`mcp-netdiag-rs` is already reasonably MCP-native in several areas:
 
 - It advertises MCP tool annotations for every tool.
 - It distinguishes normal diagnostic command failure from transport/protocol
@@ -120,8 +119,7 @@ schema alongside the success envelope.
 
 ### 3. Tool annotations are present and should be kept
 
-Unlike `mcp-serial-rs`, this server already uses MCP tool annotations
-throughout `src/mcp/mod.rs`.
+This server already uses MCP tool annotations throughout `src/mcp/mod.rs`.
 
 Good existing behavior:
 
