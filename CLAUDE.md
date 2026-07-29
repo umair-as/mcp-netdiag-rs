@@ -20,7 +20,7 @@ file is the current source of truth.
 | MCP transport | **`rmcp` SDK over stdio** | The SDK owns `initialize`, `tools/list`, `tools/call`, `notifications/initialized`. The netdiag domain stays separate (§3). |
 | Logging | **tracing** + **tracing-subscriber** (env-filter, stderr writer) | `rmcp::transport::stdio()` does NOT redirect logs — stderr setup is mandatory. |
 | Serialisation | **serde** + **serde_json** + **schemars** | Tool params are typed structs; rmcp generates input schemas from them; results use `structuredContent`. |
-| **State** | **Stateless** | netdiag tools are fire-and-forget. There is NO session concept — no `session_id`, no `SessionManager`, no per-call state. This is the load-bearing difference from the sibling `mcp-serial-rs`. |
+| **State** | **Stateless** | netdiag tools are fire-and-forget. There is NO session concept — no `session_id`, no session manager, no per-call state. This is load-bearing (see §5). |
 | Command allowlist | **Compile-time** | Programs + base args are `'static` consts. `NETDIAG_ALLOWLIST` can only *narrow* the set, never add programs/args. |
 
 - **Error semantics:** Protocol errors are for validation failures (bad
@@ -125,10 +125,9 @@ opt-in.
   `CallToolResult::structured` (read on the wire as `structuredContent`).
 - Integer bounds are advertised in the generated schema (`schemars`
   `range`) AND enforced at runtime — the runtime check is authoritative.
-- `net.routes` is paramless: like `serial.list_ports` in the sibling, the
-  rmcp SDK does not reject unknown arguments for a paramless tool. Tools
-  with a param struct reject unknown fields (`deny_unknown_fields`) →
-  `-32602`.
+- `net.routes` is paramless: the rmcp SDK does not reject unknown arguments
+  for a paramless tool. Tools with a param struct reject unknown fields
+  (`deny_unknown_fields`) → `-32602`.
 - Privileged source of truth: `PRIVILEGED_KEYS` in `src/netdiag/commands.rs`. If
   you add or remove a privileged tool, update that constant AND the §6
   env-var table AND SECURITY.md's privileged-tools table.
@@ -138,9 +137,9 @@ opt-in.
 netdiag has no session machinery — this is intentional and load-bearing.
 Each `tools/call` resolves a command, runs it, and returns. There is no
 `session_id`, no state map, no locking. rmcp dispatches concurrently, but
-handlers share nothing mutable, so concurrency needs no extra guarding
-(unlike the serial server's per-port mutex). The journal's `session_id`
-field is fixed to `"none"` so rows keep one stable shape.
+handlers share nothing mutable, so concurrency needs no extra guarding — no
+per-call mutex is required. The journal's `session_id` field is fixed to
+`"none"` so rows keep one stable shape.
 
 ## 6  Config & safety
 
@@ -208,8 +207,8 @@ All five must pass before reporting a task done.
 - Do not add config-mutating tools — this server is read-only.
 - Do not let `NETDIAG_ALLOWLIST` (or any env var) inject programs or
   arguments — it is a narrowing filter only.
-- Do not port sessions / `SessionManager` from the sibling — netdiag is
-  stateless by design (§5).
+- Do not add sessions / a session manager — netdiag is stateless by
+  design (§5).
 - Do not widen the audit journal beyond `tools/call`.
 - Do not write to stdout except MCP-framed responses (via `rmcp`). All
   logs → stderr.
