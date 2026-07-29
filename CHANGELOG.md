@@ -6,39 +6,21 @@ history.
 
 ## [0.1.0] - 2026-07-29
 
-### Security
-
-- Pin workflow actions to commit SHAs to harden supply chain ([65f4462](https://github.com/umair-as/mcp-netdiag-rs/commit/65f4462932f9a5e5e1fdd6a7bef52808c9da63e0))
-
 ### Features
 
 - Add mcp-netdiag-rs network-diagnostics MCP server ([2cce023](https://github.com/umair-as/mcp-netdiag-rs/commit/2cce02389378d1d9e86ef19d097c1f6e94c7b70a))
 - Migrate mcp-netdiag-rs to the rmcp SDK ([882b9d1](https://github.com/umair-as/mcp-netdiag-rs/commit/882b9d1524f3055add20f989ded722b7048b4409))
 - Expand diagnostic MCP tools (#2) ([8d8f715](https://github.com/umair-as/mcp-netdiag-rs/commit/8d8f715d360c7f1db37f29b07ab471a63d37971e))
 - Privileged-tool gating via NETDIAG_ENABLE_PRIVILEGED opt-in (#4) ([5c07d3e](https://github.com/umair-as/mcp-netdiag-rs/commit/5c07d3e9a995cb9520ee70ca04030c6d09cc11a7))
-- Report --version/-V and exit ([1e00ed1](https://github.com/umair-as/mcp-netdiag-rs/commit/1e00ed1ba35fef4f82b05daf0b42708f83abbb63))
+- Release & supply-chain tooling, README, and module cleanup (#5) ([a1776c5](https://github.com/umair-as/mcp-netdiag-rs/commit/a1776c5e09851961078bbb9a458ab191f1ee2d2b))
 
 ### Fixes
 
 - Reject leading dash in interface and unit tokens (#3) ([7355020](https://github.com/umair-as/mcp-netdiag-rs/commit/7355020129a1fad8e1091ccb82fe12fc58ecc7bf))
 
-### Refactor
-
-- Split out params, validators, and shared caps ([0db133f](https://github.com/umair-as/mcp-netdiag-rs/commit/0db133f3f9e3fff075fe54337acadf3c688cd6b9))
-
 ### Documentation
 
 - Decouple from internal deployment, fix mermaid diagram ([4e5bf9d](https://github.com/umair-as/mcp-netdiag-rs/commit/4e5bf9db0cf30d7fddfe8ac5f2de05fc1c8378dc))
-- Add release process and agent guide ([d644ba8](https://github.com/umair-as/mcp-netdiag-rs/commit/d644ba8bbdc361b4124a631ba5c45d1cb7b2e039))
-- Add MCP conformance findings and design docs ([1f263cf](https://github.com/umair-as/mcp-netdiag-rs/commit/1f263cfa74948d8ed28a0500f989a670c791f7c0))
-- Rewrite README with quick start and clearer structure ([c24405b](https://github.com/umair-as/mcp-netdiag-rs/commit/c24405b1078648ad39bfbf55fe28ab191ab62d4d))
-- Keep conformance findings self-contained ([f46341f](https://github.com/umair-as/mcp-netdiag-rs/commit/f46341f39f2db3697efa779268c80e8af8d831fe))
-- Drop cross-project references from CLAUDE.md ([5654f2f](https://github.com/umair-as/mcp-netdiag-rs/commit/5654f2fd0bde523bb6fc96ccb7b4d3e4ccdd85f0))
-- Refresh CLAUDE.md to match current layout ([c9f7520](https://github.com/umair-as/mcp-netdiag-rs/commit/c9f7520b355db9509b1ddbdb45cb1e0d55b7b83f))
-
-### Build and CI
-
-- Add release and supply-chain audit workflows ([0651269](https://github.com/umair-as/mcp-netdiag-rs/commit/0651269be027b4ebc4807524aafd622a9d45155c))
 
 ### Chores
 
@@ -46,6 +28,5 @@ history.
 - Add license files ([3d4df12](https://github.com/umair-as/mcp-netdiag-rs/commit/3d4df1299d862e424ea56cb1a2583dd9a9323070))
 - Add description, repository, readme to Cargo.toml ([8d01f3c](https://github.com/umair-as/mcp-netdiag-rs/commit/8d01f3c6039d3ae21cc9a2090e96f75b09c34d43))
 - Ignore env files, editor scratch, coverage artifacts ([f5c946c](https://github.com/umair-as/mcp-netdiag-rs/commit/f5c946c2d2cda961677d26150ac5b4d610f8b51e))
-- Add git-cliff config and ignore scratch notes ([1a6281f](https://github.com/umair-as/mcp-netdiag-rs/commit/1a6281f590eae24d25974383e27558010e7aee59))
 
 
