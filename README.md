@@ -1,180 +1,231 @@
-# mcp-netdiag-rs
+# 🌐 mcp-netdiag-rs
 
-A read-only MCP server for Linux network diagnostics. It exposes a small set
-of vetted, allowlisted commands as MCP tools so an MCP-capable assistant can
-inspect a host's live network state without being handed a shell. By default
-the server enables 18 unprivileged reads (`ip`, `bridge`, `journalctl`,
-`systemctl`, `ss`, `resolvectl`, `ethtool`, `df`, `free`, `uptime`); the six
-privileged tools that emit packets or need elevated capabilities (`ping`,
-`traceroute`, `tcpdump`, `nft list ruleset`, `conntrack -L`, `dmesg`) are
-refused until the operator opts in via `NETDIAG_ENABLE_PRIVILEGED` — see
-[Security Model](#security-model). Runs on any Linux host with the standard
-`iproute2` / `ping` / `traceroute` / `systemd` userspace.
+> A read-only [MCP](https://modelcontextprotocol.io) server that lets an
+> AI assistant inspect a Linux host's live network state — without ever
+> handing it a shell.
 
-## Problem It Solves
+`mcp-netdiag-rs` turns a curated set of vetted, allowlisted diagnostic
+commands (`ip`, `ss`, `resolvectl`, `ping`, `traceroute`, `tcpdump`, …) into
+**24 structured MCP tools**. An MCP-capable client can ask "why can't this box
+reach its gateway?" and the assistant answers by calling real tools against
+the real host — inside a tight security boundary that no prompt can talk its
+way out of.
 
-Network troubleshooting on a Linux host is usually manual and command-heavy.
-`mcp-netdiag-rs` provides a safe, structured diagnostics interface so an
-MCP-capable assistant can:
-- call vetted diagnostic tools,
-- collect live network evidence from the host,
-- return concise, actionable diagnosis to the operator.
+- 🔒 **Read-only by design** — nothing edits a route, mutates a unit, or
+  writes a file.
+- 🧱 **Compile-time command allowlist** — programs and base arguments are
+  `'static` constants; callers may only append *validated* tokens.
+- 🎚️ **Privileged tools are opt-in** — the six tools that put packets on the
+  wire or need elevated capabilities stay refused until the operator says
+  otherwise.
+- 📋 **Structured, actionable results** — every tool returns the same
+  `{status, signal, evidence, suggested_action, raw}` envelope.
+- 🐧 Runs on any Linux host with the standard `iproute2` / `ping` /
+  `traceroute` / `systemd` userspace.
 
-## High-Level Architecture
+---
 
-1. User asks a troubleshooting question in an MCP client.
-2. MCP client connects to `mcp-netdiag-rs` over the MCP protocol (`stdio`).
-3. Server exposes tools via `tools/list` and executes via `tools/call`.
-4. Each tool maps to an allowlisted Linux command on the same host.
-5. Server returns structured result payloads (`status`, `signal`, `evidence`, `suggested_action`, `raw`).
-6. Client/LLM synthesizes final diagnosis for the user.
+## 🔍 Why
 
-## Scope and Requirements
+Network troubleshooting on Linux is manual and command-heavy: a human SSHes
+in, runs a dozen commands from memory, and eyeballs the output. Handing an AI
+assistant a raw shell to do the same is powerful but reckless.
 
-### Functional Requirements
+`mcp-netdiag-rs` gives the assistant a **safe, structured diagnostics
+interface** instead. It can gather live evidence from the host and hand back a
+concise diagnosis — while the set of things it can actually run is fixed at
+compile time and every argument is validated before it reaches a subprocess.
 
-- Interface status and counters (`net.if_status`)
-- MAC table lookup (`net.mac_lookup`)
-- ARP/neighbor state (`net.neighbors`)
-- Routing table state (`net.routes`)
-- Address, detailed link, route lookup, and policy-rule state
-- Connectivity checks (`net.ping`, `net.traceroute`) with bounds
-- Socket, DNS, ethtool, firewall, conntrack, and bounded packet-capture probes
-- Failed unit, service status, kernel log, uptime, memory, and filesystem checks
-- Bounded log extraction (`net.logs`)
+## 🚀 Quick start
 
-### Non-Functional Requirements
+```sh
+# Build the server (single self-contained binary).
+cargo build --release
 
-- Read-only diagnostics only (no config mutation)
-- Strict command allowlist
-- Input validation for all tool args
-- Execution timeout guard
-- Output size/line bounds
-- MCP JSON-RPC compatibility for tool workflows
+# Drive it with a raw MCP handshake, then call a tool.
+(
+  echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"demo","version":"0.1.0"}}}'
+  echo '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+  echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"sys.uptime","arguments":{}}}'
+) | ./target/release/mcp-netdiag-rs
+```
 
-## MCP Protocol Layer
+Every tool call goes through a `tools/call` envelope. The parsed result lives
+under `result.structuredContent` (a text rendering is also present in
+`result.content` for clients that don't read structured output):
 
-The protocol layer is the [`rmcp`](https://crates.io/crates/rmcp) SDK over its
-stdio transport. The SDK owns `initialize`, `notifications/initialized`,
-`tools/list`, `tools/call`, and the standard JSON-RPC
-parse/invalid-request/method/params errors. Tool input schemas are derived from
-typed parameter structs via `schemars`.
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "structuredContent": {
+      "tool": "sys.uptime",
+      "status": "ok",
+      "signal": "command_succeeded",
+      "evidence": "10:42:07 up 3 days,  1:12,  2 users,  load average: 0.14, 0.09, 0.03",
+      "suggested_action": "No immediate fault signal from this command; continue with adjacent diagnostics.",
+      "raw": { "ok": true, "exit_code": 0, "stdout": "…", "stderr": "" }
+    }
+  }
+}
+```
 
-Project-specific tool errors use pinned codes: `-32010` invalid parameter,
-`-32011` command not allowed, `-32012` command execution failed.
+Swap `sys.uptime` for any tool in the **Tools** table below — e.g.
+`net.routes` for the routing table, or `net.ping` with
+`{"target":"1.1.1.1","count":3}` once you've enabled privileged tools.
 
-## Tool to Command Mapping
+### 🧭 Try the bundled example client
 
-Basic diagnostics:
+The repo ships a tiny reference client that speaks the full handshake, plans a
+few tool calls from a plain-English question, and prints a diagnosis:
 
-- `net.if_status` -> `ip -j -s link show [dev <interface>]`
-- `net.mac_lookup` -> `bridge -j fdb show to <mac>`
-- `net.neighbors` -> `ip -j neigh show [dev <interface>]`
-- `net.routes` -> `ip -j route show table all`
-- `net.addr` -> `ip -j addr show [dev <interface>]`
-- `net.link_detail` -> `ip -j -d link show [dev <interface>]`
-- `net.route_get` -> `ip -j route get <target>`
-- `net.rules` -> `ip -j rule show`
-- `net.ping` -> `ping -n -c <1..10> -W <1..5> <target>`
-- `net.traceroute` -> `traceroute -n -m <1..30> <target>`
-- `net.logs` -> `journalctl --no-pager --output=short-iso -n <1..200> [-u <unit>]`
-- `sys.failed_units` -> `systemctl --failed --no-pager --plain`
-- `sys.uptime` -> `uptime`
-- `sys.memory` -> `free -h`
-- `sys.filesystems` -> `df -h`
+```sh
+cargo run --manifest-path examples/minimal-mcp-client/Cargo.toml -- \
+  --server ./target/release/mcp-netdiag-rs \
+  --question "why can't eth0 reach its gateway?" \
+  --interface eth0
+```
 
-Extended diagnostics:
+## 🧰 Tools
 
-- `net.sockets` -> `ss -H -tuna`
-- `net.dns_status` -> `resolvectl status`
-- `net.resolv_conf` -> read `/etc/resolv.conf`
-- `net.ethtool` -> `ethtool <interface>`
-- `sys.service_status` -> `systemctl status --no-pager --lines <1..200> <unit>`
-- `sys.dmesg` -> `dmesg -T`
+All 24 tools return the same structured envelope. Tools marked 🔒 are
+**privileged** and refused unless enabled via `NETDIAG_ENABLE_PRIVILEGED`
+(see the **Security model** section).
 
-Forensics-oriented diagnostics:
+### Network
 
-- `net.firewall` -> `nft list ruleset`
-- `net.conntrack` -> `conntrack -L`
-- `net.tcpdump_sample` -> `tcpdump -nn -i <interface> -c <1..50>`
+| Tool | What it shows | Command |
+| --- | --- | --- |
+| `net.if_status` | Interface state + counters | `ip -j -s link show [dev <iface>]` |
+| `net.addr` | Interface addresses | `ip -j addr show [dev <iface>]` |
+| `net.link_detail` | Detailed link attributes | `ip -j -d link show [dev <iface>]` |
+| `net.neighbors` | ARP / neighbor table | `ip -j neigh show [dev <iface>]` |
+| `net.mac_lookup` | Bridge FDB entry for a MAC | `bridge -j fdb show to <mac>` |
+| `net.routes` | Full routing table | `ip -j route show table all` |
+| `net.route_get` | Route the kernel picks for a target | `ip -j route get <target>` |
+| `net.rules` | Policy routing rules | `ip -j rule show` |
+| `net.sockets` | Open TCP/UDP sockets | `ss -H -tuna` |
+| `net.dns_status` | systemd-resolved status | `resolvectl status` |
+| `net.resolv_conf` | Resolver config | read `/etc/resolv.conf` |
+| `net.ethtool` | NIC driver / link settings | `ethtool <iface>` |
+| `net.logs` | Bounded journal tail | `journalctl -n <1..200> [-u <unit>]` |
+| 🔒 `net.ping` | ICMP reachability | `ping -n -c <1..10> -W <1..5> <target>` |
+| 🔒 `net.traceroute` | Path to a target | `traceroute -n -m <1..30> <target>` |
+| 🔒 `net.tcpdump_sample` | Bounded packet capture | `tcpdump -nn -i <iface> -c <1..50>` |
+| 🔒 `net.firewall` | nftables ruleset | `nft list ruleset` |
+| 🔒 `net.conntrack` | Connection tracking table | `conntrack -L` |
 
-Some extended and forensics-oriented diagnostics require elevated privileges
-or Linux capabilities on typical systems. In particular, `net.firewall`,
-`net.conntrack`, `net.tcpdump_sample`, `sys.dmesg`, and some `net.ethtool`
-queries may return `status: "fail"` when the server process lacks the needed
-permissions. That is reported as a normal diagnostic result, not as MCP
-transport failure.
+### System
 
-`net.tcpdump_sample` waits until the requested packet count is captured or the
-server command timeout expires. On idle interfaces, prefer a small `count` and
-expect a command-timeout tool error if no packets arrive.
+| Tool | What it shows | Command |
+| --- | --- | --- |
+| `sys.failed_units` | Failed systemd units | `systemctl --failed --plain` |
+| `sys.service_status` | Status of one unit | `systemctl status --lines <1..200> <unit>` |
+| `sys.uptime` | Uptime + load average | `uptime` |
+| `sys.memory` | Memory usage | `free -h` |
+| `sys.filesystems` | Filesystem usage | `df -h` |
+| 🔒 `sys.dmesg` | Kernel ring buffer | `dmesg -T` |
 
-## Security Model
+A command that *runs* but exits non-zero is **not** a protocol error — it's a
+normal result with `status: "fail"`. Protocol errors (`-32010` invalid
+parameter, `-32011` command not allowed / privileged-disabled, `-32012`
+command execution failed) are reserved for calls that can't run at all.
 
-The 24 tools split into two groups. The split determines what runs by
-default; both groups share the compile-time command allowlist, the
-per-token validators, the wall-clock timeout, and the output bounds
-described in [SECURITY.md](SECURITY.md).
+## 🛡️ Security model
 
-- **Default — 18 tools, enabled out of the box.** Pure reads of
-  unprivileged Linux state: `ip` / `ss` / `resolvectl` / `systemctl` /
-  `df` / `free` / `journalctl` / `ethtool` and friends. No capabilities
-  required; safe to run as an unprivileged user.
-- **Privileged — 6 tools, refused by default.** Either emit observable
-  side effects on the wire (`net.ping` and `net.traceroute` need
-  `CAP_NET_RAW`; `net.tcpdump_sample` needs
-  `CAP_NET_RAW + CAP_NET_ADMIN` and toggles promiscuous mode on the
-  capture interface) or require elevated capabilities to read kernel
-  state (`net.firewall` / `net.conntrack` need `CAP_NET_ADMIN`;
-  `sys.dmesg` needs `CAP_SYSLOG` when `kernel.dmesg_restrict=1`).
-  The operator opts in per-deployment via `NETDIAG_ENABLE_PRIVILEGED`
-  (see [Configuration](#configuration)). With the env var unset,
-  every privileged call returns `-32011` and never spawns a subprocess.
+The 24 tools split into two groups. Both share the compile-time command
+allowlist, the per-token validators, the wall-clock timeout, and the output
+size/line bounds documented in **[SECURITY.md](SECURITY.md)**.
 
-The two opt-ins compose by AND: a privileged opt-in cannot widen a
-narrower `NETDIAG_ALLOWLIST`. If a tool is not in the allowlist, no
-env var can make it run.
+- **Default — 18 tools, enabled out of the box.** Pure reads of unprivileged
+  Linux state (`ip` / `ss` / `resolvectl` / `systemctl` / `df` / `free` /
+  `journalctl` / `ethtool` and friends). No capabilities required; safe to run
+  as an unprivileged user.
+- 🔒 **Privileged — 6 tools, refused by default.** They either emit observable
+  side effects on the wire (`net.ping` / `net.traceroute` need `CAP_NET_RAW`;
+  `net.tcpdump_sample` needs `CAP_NET_RAW + CAP_NET_ADMIN` and toggles
+  promiscuous mode) or read privileged kernel state (`net.firewall` /
+  `net.conntrack` need `CAP_NET_ADMIN`; `sys.dmesg` needs `CAP_SYSLOG` when
+  `kernel.dmesg_restrict=1`). With `NETDIAG_ENABLE_PRIVILEGED` unset, every
+  privileged call returns `-32011` and never spawns a subprocess.
 
-See [SECURITY.md](SECURITY.md) for the threat model, the full per-tool
-capability table, and a systemd unit recipe for privileged deployments.
+The two opt-ins **compose by AND**: a privileged opt-in can never widen a
+narrower `NETDIAG_ALLOWLIST`. If a tool isn't in the allowlist, no env var can
+make it run. See [SECURITY.md](SECURITY.md) for the full threat model, the
+per-tool capability table, and a systemd unit recipe for privileged
+deployments.
 
-## Configuration
+## ⚙️ Configuration
 
-Environment variables:
+All configuration is via environment variables — there is no config file.
 
-- `NETDIAG_JOURNAL` — path to the JSONL tool-call audit journal (default
-  `/tmp/mcp-netdiag-journal.jsonl`). Always-on; an unwritable path degrades to
-  a warning and the server continues without auditing.
-- `NETDIAG_ALLOWLIST` — comma-separated subset of built-in command keys from
-  the mapping table above. When set, only the listed commands are runnable.
-  This is a *narrowing* filter — it can only disable built-in commands, never
-  add programs or arguments.
-- `NETDIAG_ENABLE_PRIVILEGED` — opt-in for the six privileged tools (see [Security
-  Model](#security-model)). Accepts a comma-separated subset of
-  `{ping, traceroute, tcpdump_sample, firewall, conntrack, dmesg}`, the
-  literal `all`, or `none` / empty / unset. Case-sensitive. Default: unset
-  → no privileged tools enabled. Composes with `NETDIAG_ALLOWLIST` by AND;
-  cannot widen the allowlist.
-- `RUST_LOG` — `tracing` filter (default `mcp_netdiag_rs=info`); logs go to
-  stderr, never stdout.
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `NETDIAG_ENABLE_PRIVILEGED` | Opt-in for the six 🔒 tools. Comma-separated subset of `{ping, traceroute, tcpdump_sample, firewall, conntrack, dmesg}`, the literal `all`, or `none`/empty. **Case-sensitive.** Composes with `NETDIAG_ALLOWLIST` by AND. | unset → all refused |
+| `NETDIAG_ALLOWLIST` | Comma-separated subset of built-in command keys. When set, only those run. **Narrowing only** — can disable built-ins, never add programs or arguments. | unset → all enabled |
+| `NETDIAG_JOURNAL` | Path to the JSONL tool-call audit journal. Always-on; an unwritable path degrades to a warning and the server keeps running without auditing. | `/tmp/mcp-netdiag-journal.jsonl` |
+| `RUST_LOG` | `tracing` filter. Logs go to **stderr only**, never stdout. | `mcp_netdiag_rs=info` |
 
-## Deployment
+## 🏗️ How it works
 
-Run the server locally on the host you want to diagnose, so its tools reflect
-that host's real network state. It builds to a single self-contained binary —
-install it however suits the target: a distro package, a container image, or
-(for embedded Linux) a Yocto/BitBake recipe.
+```text
+MCP client ──stdio (JSON-RPC)──▶ rmcp SDK ──▶ NetdiagServer
+                                                  │
+                              tools/call ─────────┤
+                                                  ▼
+                                   allowlist + token validators
+                                                  ▼
+                                   bounded subprocess (timeout, size caps)
+                                                  ▼
+                                   {status, signal, evidence, … , raw}
+```
 
-## Local Development
+The MCP protocol layer is the [`rmcp`](https://crates.io/crates/rmcp) SDK over
+its stdio transport — it owns `initialize`, `tools/list`, `tools/call`, and
+the standard JSON-RPC errors. Tool input schemas are derived from typed
+parameter structs via `schemars`. The server is **stateless**: each call
+resolves a command, runs it, and returns — no sessions, no per-call state.
+`stdout` is reserved exclusively for MCP messages.
 
-```bash
-cargo fmt
+See **[docs/architecture.md](docs/architecture.md)** for the sequence diagram
+and the full tool→command mapping.
+
+## 📦 Deployment
+
+Run the server **locally on the host you want to diagnose**, so its tools
+reflect that host's real network state. It builds to a single self-contained
+binary — install it however suits the target: a distro package, a container
+image, or (for embedded Linux) a Yocto/BitBake recipe. It's meant to be
+launched by an MCP client, not driven by hand.
+
+## 🧪 Development
+
+```sh
+cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --release
+cargo build --manifest-path examples/minimal-mcp-client/Cargo.toml
 ```
 
-## Notes
+Supply-chain checks (run in CI, or locally):
 
-- This server is intended to be invoked by an MCP client, not interacted with directly by humans.
-- Transport is line-delimited JSON over `stdin`/`stdout`.
+```sh
+cargo audit
+cargo deny check bans licenses sources
+```
+
+## 🏷️ Releases
+
+Releases are cut by a manually-dispatched GitHub Actions workflow that
+validates the version, re-runs the full check suite, and publishes a tagged
+binary. Release notes are generated from the git history via
+[git-cliff](https://github.com/orhun/git-cliff). See
+**[CHANGELOG.md](CHANGELOG.md)** for what shipped and
+**[docs/RELEASE.md](docs/RELEASE.md)** for the process.
+
+## 📄 License
+
+Dual-licensed under either [MIT](LICENSE-MIT) or
+[Apache-2.0](LICENSE-APACHE), at your option.

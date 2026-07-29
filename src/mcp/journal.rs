@@ -28,11 +28,6 @@ use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::Mutex as TokioMutex;
 use tracing::warn;
 
-/// Max chars retained from any large free-form field when summarised into
-/// the journal. Char-bounded (not byte-bounded) so the slice always lands
-/// on a UTF-8 boundary.
-const JOURNAL_HEAD_CHARS: usize = 128;
-
 /// One row in the journal. `summary` is tool-specific and kept small.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JournalEntry {
@@ -161,11 +156,12 @@ pub fn result_summary(result: &Result<&CallToolResult, &ErrorData>) -> Value {
     }
 }
 
-/// First [`JOURNAL_HEAD_CHARS`] chars of a result's `evidence` field.
+/// First [`crate::config::JOURNAL_HEAD_CHARS`] chars of a result's `evidence`
+/// field.
 fn evidence_head(sc: Option<&Value>) -> String {
     sc.and_then(|v| v.get("evidence"))
         .and_then(Value::as_str)
-        .map(|s| s.chars().take(JOURNAL_HEAD_CHARS).collect())
+        .map(|s| s.chars().take(crate::config::JOURNAL_HEAD_CHARS).collect())
         .unwrap_or_default()
 }
 
@@ -249,7 +245,7 @@ mod tests {
         assert_eq!(summary["signal"], json!("command_succeeded"));
         assert_eq!(
             summary["evidence_head"].as_str().unwrap().chars().count(),
-            JOURNAL_HEAD_CHARS
+            crate::config::JOURNAL_HEAD_CHARS
         );
     }
 

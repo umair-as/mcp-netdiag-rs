@@ -19,6 +19,18 @@ use mcp_netdiag_rs::netdiag::commands::CommandRunner;
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
+    // Handle `--version` / `-V` before any runtime or transport setup. This is
+    // a one-shot CLI query that prints to stdout and exits — it never enters
+    // an MCP session, so the "stdout is MCP-only" rule (CLAUDE.md §7) does not
+    // apply. Kept dependency-free (no clap) per the crate's no-new-deps rule.
+    if std::env::args()
+        .skip(1)
+        .any(|arg| arg == "--version" || arg == "-V")
+    {
+        println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     // `rmcp::transport::stdio()` returns the OS stdin/stdout pair and does
     // NOT configure logging — stderr-only `tracing` setup is mandatory,
     // otherwise crate logs would corrupt the MCP wire.

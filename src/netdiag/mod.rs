@@ -12,11 +12,13 @@
 //!   stable diagnostic envelope every tool returns.
 
 pub mod commands;
+pub mod validators;
 
 use std::future::Future;
 
 use serde_json::{json, Value};
 
+use crate::config;
 use crate::errors::NetdiagError;
 
 /// The seam between a tool handler and command execution.
@@ -32,9 +34,6 @@ pub trait CommandExecutor: Send + Sync + 'static {
         extra: &[String],
     ) -> impl Future<Output = Result<Value, NetdiagError>> + Send;
 }
-
-/// Maximum characters of raw stdout retained in the `evidence` field.
-const EVIDENCE_MAX_CHARS: usize = 500;
 
 /// Shape a raw `{ok, exit_code, stdout, stderr}` command result into the
 /// stable diagnostic envelope `{tool, status, signal, evidence,
@@ -55,7 +54,7 @@ pub fn normalize_tool_result(tool: &str, raw: Value) -> Value {
         "tool": tool,
         "status": status,
         "signal": signal,
-        "evidence": truncate_text(evidence, EVIDENCE_MAX_CHARS),
+        "evidence": truncate_text(evidence, config::EVIDENCE_MAX_CHARS),
         "suggested_action": suggestion,
         "raw": raw,
     })

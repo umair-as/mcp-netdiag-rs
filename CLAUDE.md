@@ -4,9 +4,7 @@
 > stdio. Runs on any host with a standard iproute2 / ping / traceroute /
 > systemd userspace.
 
-The MCP protocol layer is the `rmcp` SDK over its stdio transport. The
-migration off the original hand-rolled JSON-RPC layer is complete — this
-file is the current source of truth.
+The MCP protocol layer is the `rmcp` SDK over its stdio transport (§7).
 
 ---
 
@@ -20,7 +18,7 @@ file is the current source of truth.
 | MCP transport | **`rmcp` SDK over stdio** | The SDK owns `initialize`, `tools/list`, `tools/call`, `notifications/initialized`. The netdiag domain stays separate (§3). |
 | Logging | **tracing** + **tracing-subscriber** (env-filter, stderr writer) | `rmcp::transport::stdio()` does NOT redirect logs — stderr setup is mandatory. |
 | Serialisation | **serde** + **serde_json** + **schemars** | Tool params are typed structs; rmcp generates input schemas from them; results use `structuredContent`. |
-| **State** | **Stateless** | netdiag tools are fire-and-forget. There is NO session concept — no `session_id`, no `SessionManager`, no per-call state. This is the load-bearing difference from the sibling `mcp-serial-rs`. |
+| **State** | **Stateless** | netdiag tools are fire-and-forget. There is NO session concept — no `session_id`, no session manager, no per-call state. This is load-bearing (see §5). |
 | Command allowlist | **Compile-time** | Programs + base args are `'static` consts. `NETDIAG_ALLOWLIST` can only *narrow* the set, never add programs/args. |
 
 - **Error semantics:** Protocol errors are for validation failures (bad
@@ -55,20 +53,23 @@ checks), `tokio-serial`. No new runtime dependencies without approval.
 ```
 mcp-netdiag-rs/
 ├── Cargo.toml
-├── CLAUDE.md            ← you are here
+├── CLAUDE.md            ← you are here (developer orientation)
+├── AGENTS.md           ← guide for agents *using* the server (kept in sync with §4/§6)
 ├── docs/architecture.md ← sequence diagram, tool→command mapping
 ├── examples/minimal-mcp-client/  ← raw-JSON-RPC example client (own sub-crate)
 ├── src/
 │   ├── lib.rs           ← crate root; re-exports modules for tests
-│   ├── main.rs          ← tokio bootstrap; builds NetdiagServer, hands stdio to rmcp
-│   ├── config.rs        ← bounds constants + env-var resolution
+│   ├── main.rs          ← tokio bootstrap; --version; builds NetdiagServer, hands stdio to rmcp
+│   ├── config.rs        ← bounds/size constants + env-var resolution
 │   ├── errors.rs        ← NetdiagError enum, → rmcp::ErrorData adapter
 │   ├── mcp/
 │   │   ├── mod.rs       ← rmcp adapter: NetdiagServer, #[tool] handlers, journal hook
+│   │   ├── params.rs    ← typed tool-parameter structs (rmcp derives schemas from these)
 │   │   └── journal.rs   ← JournalWriter (JSONL sink) + summary shaping
 │   └── netdiag/
 │       ├── mod.rs       ← CommandExecutor trait + result shaping
-│       └── commands.rs  ← CommandRunner, allowlist, validators (the security boundary)
+│       ├── commands.rs  ← CommandRunner + compile-time allowlist (the security boundary)
+│       └── validators.rs ← caller-token validators (the input-sanitization boundary)
 └── tests/
     ├── mcp_tests.rs     ← in-process rmcp wire tests (stubbed runner)
     └── integration.rs   ← end-to-end through the compiled binary
@@ -125,10 +126,9 @@ opt-in.
   `CallToolResult::structured` (read on the wire as `structuredContent`).
 - Integer bounds are advertised in the generated schema (`schemars`
   `range`) AND enforced at runtime — the runtime check is authoritative.
-- `net.routes` is paramless: like `serial.list_ports` in the sibling, the
-  rmcp SDK does not reject unknown arguments for a paramless tool. Tools
-  with a param struct reject unknown fields (`deny_unknown_fields`) →
-  `-32602`.
+- `net.routes` is paramless: the rmcp SDK does not reject unknown arguments
+  for a paramless tool. Tools with a param struct reject unknown fields
+  (`deny_unknown_fields`) → `-32602`.
 - Privileged source of truth: `PRIVILEGED_KEYS` in `src/netdiag/commands.rs`. If
   you add or remove a privileged tool, update that constant AND the §6
   env-var table AND SECURITY.md's privileged-tools table.
@@ -138,9 +138,9 @@ opt-in.
 netdiag has no session machinery — this is intentional and load-bearing.
 Each `tools/call` resolves a command, runs it, and returns. There is no
 `session_id`, no state map, no locking. rmcp dispatches concurrently, but
-handlers share nothing mutable, so concurrency needs no extra guarding
-(unlike the serial server's per-port mutex). The journal's `session_id`
-field is fixed to `"none"` so rows keep one stable shape.
+handlers share nothing mutable, so concurrency needs no extra guarding — no
+per-call mutex is required. The journal's `session_id` field is fixed to
+`"none"` so rows keep one stable shape.
 
 ## 6  Config & safety
 
@@ -150,12 +150,16 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 5;
 pub const MAX_STDOUT_BYTES: usize = 64 * 1024;
 pub const MAX_STDERR_BYTES: usize = 8 * 1024;
 pub const MAX_OUTPUT_LINES: usize = 512;
+pub const EVIDENCE_MAX_CHARS: usize = 500;  // `evidence` field cap
+pub const JOURNAL_HEAD_CHARS: usize = 128;  // audit-journal summary cap
 ```
 
-- The command allowlist (`netdiag/commands.rs`) is the security boundary.
-  Programs and base args are compile-time `'static` consts; callers may
-  only append arguments that pass the token validators
-  (`validate_interface` / `validate_ip_or_host` / `validate_mac`).
+- The security boundary is two halves: the compile-time command allowlist
+  (`netdiag/commands.rs`) and the caller-token validators
+  (`netdiag/validators.rs`). Programs and base args are `'static` consts;
+  callers may only append arguments that pass a validator
+  (`validate_interface` / `validate_ip_or_host` / `validate_unit` /
+  `validate_mac`).
 - All commands run under a wall-clock timeout; output is byte- and
   line-bounded.
 
@@ -172,7 +176,9 @@ pub const MAX_OUTPUT_LINES: usize = 512;
 
 - **stdout is reserved for MCP messages only.** No `println!`, no debug
   prints. The caller MUST configure `tracing-subscriber` with a stderr
-  writer — `rmcp::transport::stdio()` does not redirect anything.
+  writer — `rmcp::transport::stdio()` does not redirect anything. The one
+  exception is the `--version`/`-V` fast path in `main.rs`, which prints one
+  line to stdout and exits *before* any MCP session begins.
 - **Logs go to stderr only**, via `tracing`, driven by `RUST_LOG`.
 - The audit journal is scoped to `tools/call` only (one `call` row + one
   `result` row). Lifecycle traffic is not journaled — it never enters the
@@ -208,8 +214,8 @@ All five must pass before reporting a task done.
 - Do not add config-mutating tools — this server is read-only.
 - Do not let `NETDIAG_ALLOWLIST` (or any env var) inject programs or
   arguments — it is a narrowing filter only.
-- Do not port sessions / `SessionManager` from the sibling — netdiag is
-  stateless by design (§5).
+- Do not add sessions / a session manager — netdiag is stateless by
+  design (§5).
 - Do not widen the audit journal beyond `tools/call`.
 - Do not write to stdout except MCP-framed responses (via `rmcp`). All
   logs → stderr.

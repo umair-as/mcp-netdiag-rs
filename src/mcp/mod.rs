@@ -13,6 +13,7 @@
 //! every call is fire-and-forget, there is no session concept.
 
 pub mod journal;
+pub mod params;
 
 use std::sync::Arc;
 
@@ -24,17 +25,19 @@ use rmcp::{
     service::RequestContext,
     tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler,
 };
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::instrument;
 
 use crate::errors::NetdiagError;
-use crate::netdiag::commands::{
+use crate::netdiag::validators::{
     validate_interface, validate_ip_or_host, validate_mac, validate_unit,
 };
 use crate::netdiag::{normalize_tool_result, CommandExecutor};
 use journal::{JournalEntry, JournalWriter};
+use params::{
+    InterfaceParams, LogsParams, MacLookupParams, PingParams, RequiredInterfaceParams,
+    ServiceStatusParams, TargetParams, TcpdumpParams, TracerouteParams,
+};
 
 /// rmcp-facing server. Holds the command executor and the optional audit
 /// journal, and registers the diagnostic tools with the `rmcp` SDK. Generic
@@ -678,104 +681,6 @@ fn bounded(
         }),
         other => Ok(other),
     }
-}
-
-/// Input for the interface-scoped tools (`net.if_status`, `net.neighbors`).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct InterfaceParams {
-    /// Restrict output to this interface; omit for all interfaces.
-    #[serde(default)]
-    pub interface: Option<String>,
-}
-
-/// Input for tools that require an interface name.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RequiredInterfaceParams {
-    /// Interface to inspect.
-    pub interface: String,
-}
-
-/// Input for target-scoped tools.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct TargetParams {
-    /// IP address or hostname to inspect.
-    pub target: String,
-}
-
-/// Input for `net.mac_lookup`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct MacLookupParams {
-    /// MAC address to look up, in `aa:bb:cc:dd:ee:ff` form.
-    pub mac: String,
-}
-
-/// Input for `net.ping`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct PingParams {
-    /// IP address or hostname to ping.
-    pub target: String,
-    /// Echo requests to send (1–10, default 3).
-    #[serde(default)]
-    #[schemars(range(min = 1, max = 10))]
-    pub count: Option<u64>,
-    /// Per-reply wait in seconds (1–5, default 2).
-    #[serde(default)]
-    #[schemars(range(min = 1, max = 5))]
-    pub timeout_secs: Option<u64>,
-}
-
-/// Input for `net.traceroute`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct TracerouteParams {
-    /// IP address or hostname to trace.
-    pub target: String,
-    /// Maximum hops to probe (1–30, default 12).
-    #[serde(default)]
-    #[schemars(range(min = 1, max = 30))]
-    pub max_hops: Option<u64>,
-}
-
-/// Input for `net.logs`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct LogsParams {
-    /// Number of recent journal lines to return (1–200, default 50).
-    #[serde(default)]
-    #[schemars(range(min = 1, max = 200))]
-    pub lines: Option<u64>,
-    /// Restrict to this systemd unit; omit for all units.
-    #[serde(default)]
-    pub unit: Option<String>,
-}
-
-/// Input for `sys.service_status`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ServiceStatusParams {
-    /// Systemd unit to inspect.
-    pub unit: String,
-    /// Number of status log lines to include (1-200, default 50).
-    #[serde(default)]
-    #[schemars(range(min = 1, max = 200))]
-    pub lines: Option<u64>,
-}
-
-/// Input for `net.tcpdump_sample`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct TcpdumpParams {
-    /// Interface to capture from.
-    pub interface: String,
-    /// Packets to capture (1-50, default 10).
-    #[serde(default)]
-    #[schemars(range(min = 1, max = 50))]
-    pub count: Option<u64>,
 }
 
 #[tool_handler(router = self.tool_router)]
