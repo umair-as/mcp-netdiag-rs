@@ -4,9 +4,7 @@
 > stdio. Runs on any host with a standard iproute2 / ping / traceroute /
 > systemd userspace.
 
-The MCP protocol layer is the `rmcp` SDK over its stdio transport. The
-migration off the original hand-rolled JSON-RPC layer is complete — this
-file is the current source of truth.
+The MCP protocol layer is the `rmcp` SDK over its stdio transport (§7).
 
 ---
 
@@ -55,20 +53,23 @@ checks), `tokio-serial`. No new runtime dependencies without approval.
 ```
 mcp-netdiag-rs/
 ├── Cargo.toml
-├── CLAUDE.md            ← you are here
+├── CLAUDE.md            ← you are here (developer orientation)
+├── AGENTS.md           ← guide for agents *using* the server (kept in sync with §4/§6)
 ├── docs/architecture.md ← sequence diagram, tool→command mapping
 ├── examples/minimal-mcp-client/  ← raw-JSON-RPC example client (own sub-crate)
 ├── src/
 │   ├── lib.rs           ← crate root; re-exports modules for tests
-│   ├── main.rs          ← tokio bootstrap; builds NetdiagServer, hands stdio to rmcp
-│   ├── config.rs        ← bounds constants + env-var resolution
+│   ├── main.rs          ← tokio bootstrap; --version; builds NetdiagServer, hands stdio to rmcp
+│   ├── config.rs        ← bounds/size constants + env-var resolution
 │   ├── errors.rs        ← NetdiagError enum, → rmcp::ErrorData adapter
 │   ├── mcp/
 │   │   ├── mod.rs       ← rmcp adapter: NetdiagServer, #[tool] handlers, journal hook
+│   │   ├── params.rs    ← typed tool-parameter structs (rmcp derives schemas from these)
 │   │   └── journal.rs   ← JournalWriter (JSONL sink) + summary shaping
 │   └── netdiag/
 │       ├── mod.rs       ← CommandExecutor trait + result shaping
-│       └── commands.rs  ← CommandRunner, allowlist, validators (the security boundary)
+│       ├── commands.rs  ← CommandRunner + compile-time allowlist (the security boundary)
+│       └── validators.rs ← caller-token validators (the input-sanitization boundary)
 └── tests/
     ├── mcp_tests.rs     ← in-process rmcp wire tests (stubbed runner)
     └── integration.rs   ← end-to-end through the compiled binary
@@ -149,12 +150,16 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 5;
 pub const MAX_STDOUT_BYTES: usize = 64 * 1024;
 pub const MAX_STDERR_BYTES: usize = 8 * 1024;
 pub const MAX_OUTPUT_LINES: usize = 512;
+pub const EVIDENCE_MAX_CHARS: usize = 500;  // `evidence` field cap
+pub const JOURNAL_HEAD_CHARS: usize = 128;  // audit-journal summary cap
 ```
 
-- The command allowlist (`netdiag/commands.rs`) is the security boundary.
-  Programs and base args are compile-time `'static` consts; callers may
-  only append arguments that pass the token validators
-  (`validate_interface` / `validate_ip_or_host` / `validate_mac`).
+- The security boundary is two halves: the compile-time command allowlist
+  (`netdiag/commands.rs`) and the caller-token validators
+  (`netdiag/validators.rs`). Programs and base args are `'static` consts;
+  callers may only append arguments that pass a validator
+  (`validate_interface` / `validate_ip_or_host` / `validate_unit` /
+  `validate_mac`).
 - All commands run under a wall-clock timeout; output is byte- and
   line-bounded.
 
@@ -171,7 +176,9 @@ pub const MAX_OUTPUT_LINES: usize = 512;
 
 - **stdout is reserved for MCP messages only.** No `println!`, no debug
   prints. The caller MUST configure `tracing-subscriber` with a stderr
-  writer — `rmcp::transport::stdio()` does not redirect anything.
+  writer — `rmcp::transport::stdio()` does not redirect anything. The one
+  exception is the `--version`/`-V` fast path in `main.rs`, which prints one
+  line to stdout and exits *before* any MCP session begins.
 - **Logs go to stderr only**, via `tracing`, driven by `RUST_LOG`.
 - The audit journal is scoped to `tools/call` only (one `call` row + one
   `result` row). Lifecycle traffic is not journaled — it never enters the
