@@ -29,6 +29,16 @@ pub const MAX_STDERR_BYTES: usize = 8 * 1024;
 /// Maximum lines retained from a command's captured output.
 pub const MAX_OUTPUT_LINES: usize = 512;
 
+/// Maximum characters of raw stdout retained in the diagnostic envelope's
+/// `evidence` field (see [`crate::netdiag::normalize_tool_result`]).
+pub const EVIDENCE_MAX_CHARS: usize = 500;
+
+/// Maximum characters retained from any large free-form field when
+/// summarised into the audit journal (see [`crate::mcp::journal`]).
+/// Char-bounded (not byte-bounded) so the slice always lands on a UTF-8
+/// boundary.
+pub const JOURNAL_HEAD_CHARS: usize = 128;
+
 /// [`DEFAULT_TIMEOUT_SECS`] as a [`Duration`], for the command runner.
 pub fn default_timeout() -> Duration {
     Duration::from_secs(DEFAULT_TIMEOUT_SECS)
