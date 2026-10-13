@@ -69,8 +69,11 @@ Keep JSON-RPC errors for protocol/envelope problems:
 - malformed JSON-RPC
 - unknown method
 - unknown tool name
-- parameter deserialization failure, such as unknown fields rejected by
-  `deny_unknown_fields`
+
+Parameter deserialization failures (e.g. unknown fields rejected by
+`deny_unknown_fields`) are already tool execution errors (`isError: true`)
+since rmcp 1.8 (rust-sdk#894), in line with the MCP guidance that input
+validation errors should reach the model so it can self-correct.
 
 ### 2. Add `outputSchema` for every tool
 
