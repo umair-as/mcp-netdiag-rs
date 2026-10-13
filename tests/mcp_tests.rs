@@ -340,11 +340,27 @@ async fn call_unknown_tool_returns_error() {
 }
 
 #[tokio::test]
-async fn call_with_unknown_argument_returns_invalid_params() {
+async fn call_with_unknown_argument_returns_tool_error() {
     // `deny_unknown_fields` on the param struct turns an unexpected field
-    // into a deserialization failure, surfaced by rmcp as -32602.
+    // into a deserialization failure. Since rmcp 1.8 (rust-sdk#894) that is
+    // surfaced as a tool execution error (`isError: true`) rather than a
+    // JSON-RPC -32602, so the model can read the message and self-correct.
     let resp = handshake_then_call(stub_server(), "net.if_status", json!({"bogus": true})).await;
-    assert_eq!(rpc_error_code(&resp), -32602);
+    assert!(
+        resp.get("error").is_none(),
+        "expected a tool result, got {resp}"
+    );
+    let result = &resp["result"];
+    assert_eq!(
+        result["isError"],
+        json!(true),
+        "expected isError=true in {resp}"
+    );
+    let text = result["content"][0]["text"].as_str().unwrap_or_default();
+    assert!(
+        text.contains("unknown field `bogus`"),
+        "error text should name the rejected field: {text}",
+    );
 }
 
 #[tokio::test]

@@ -128,7 +128,8 @@ opt-in.
   `range`) AND enforced at runtime — the runtime check is authoritative.
 - `net.routes` is paramless: the rmcp SDK does not reject unknown arguments
   for a paramless tool. Tools with a param struct reject unknown fields
-  (`deny_unknown_fields`) → `-32602`.
+  (`deny_unknown_fields`); since rmcp 1.8 that surfaces as a tool result
+  with `isError: true`, not a JSON-RPC `-32602`.
 - Privileged source of truth: `PRIVILEGED_KEYS` in `src/netdiag/commands.rs`. If
   you add or remove a privileged tool, update that constant AND the §6
   env-var table AND SECURITY.md's privileged-tools table.

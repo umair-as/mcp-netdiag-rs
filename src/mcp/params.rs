@@ -4,7 +4,7 @@
 //!
 //! One struct per parameterised tool. `rmcp` derives each tool's input schema
 //! from these via `schemars`, and `#[serde(deny_unknown_fields)]` makes the
-//! SDK reject unknown arguments with `-32602`. Integer `range(...)` bounds are
+//! SDK reject unknown arguments (as an `isError: true` tool result). Integer `range(...)` bounds are
 //! advertised here but enforced at runtime in [`super`] (`bounded`), which is
 //! the authoritative check.
 
