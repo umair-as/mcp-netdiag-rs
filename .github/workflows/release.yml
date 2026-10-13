@@ -44,7 +44,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Cache cargo registry and target
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Validate release request
         env:
@@ -117,7 +117,7 @@ jobs:
 
       - name: Generate release notes
         # v4
-        uses: orhun/git-cliff-action@f50e11560dce63f7c33227798f90b924471a88b5
+        uses: orhun/git-cliff-action@3d96a18cc4ec17e9dc69ddcc424ccafaf1f78ce2
         with:
           version: v2.13.1
           config: cliff.toml
