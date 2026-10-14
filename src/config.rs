@@ -64,9 +64,14 @@ pub fn journal_paths() -> Vec<PathBuf> {
         std::env::var_os(JOURNAL_ENV),
         std::env::var_os("XDG_STATE_HOME"),
         std::env::var_os("HOME"),
-        // SAFETY: geteuid() has no preconditions and cannot fail.
-        unsafe { libc::geteuid() },
+        euid(),
     )
+}
+
+/// The server's effective uid (journal path and owner checks).
+pub fn euid() -> u32 {
+    // SAFETY: geteuid() has no preconditions and cannot fail.
+    unsafe { libc::geteuid() }
 }
 
 /// Pure journal-path resolver (no env access) so it is unit testable

@@ -78,10 +78,10 @@ impl JournalWriter {
     /// directory), or a file — or freshly-defaulted parent directory — not
     /// owned by the server's effective uid.
     pub async fn open(path: &Path) -> std::io::Result<Self> {
-        // SAFETY: geteuid() has no preconditions and cannot fail.
-        let euid = unsafe { libc::geteuid() };
+        let euid = crate::config::euid();
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            prepare_parent(parent, euid).await?;
+            let strict_dir = crate::config::journal_tmp_fallback_dir(euid);
+            prepare_parent(parent, euid, &strict_dir).await?;
         }
         let file = OpenOptions::new()
             .create(true)
@@ -125,6 +125,14 @@ impl JournalWriter {
                     tracing::info!(path = %path.display(), "journal opened");
                     return Some(Arc::new(w));
                 }
+                // A planted symlink or foreign-owned file/dir is a tampering
+                // sign, not an environment problem: say so loudly even
+                // though auditing continues on the fallback.
+                Err(e) if i + 1 < paths.len() && is_refusal(&e) => error!(
+                    error = %e,
+                    path = %path.display(),
+                    "journal path refused as unsafe — trying fallback path"
+                ),
                 Err(e) if i + 1 < paths.len() => warn!(
                     error = %e,
                     path = %path.display(),
@@ -168,12 +176,14 @@ impl JournalWriter {
     }
 }
 
-/// Create the journal's parent directory (0700) if missing. A directory
-/// that already exists is left alone unless it is the per-uid `/tmp`
-/// fallback ([`crate::config::journal_tmp_fallback_dir`]), which sits in a
-/// world-writable parent and so must be ours and private.
-async fn prepare_parent(parent: &Path, euid: u32) -> std::io::Result<()> {
-    if parent == crate::config::journal_tmp_fallback_dir(euid) {
+/// Create the journal's parent directory (0700) if missing. `strict_dir`
+/// is the per-uid `/tmp` fallback ([`crate::config::journal_tmp_fallback_dir`]):
+/// it sits in a world-writable parent, so when `parent` is that directory it
+/// must be a real directory owned by `euid` with no group/other bits. Any
+/// other existing directory is left alone (it is under the user's home or an
+/// operator-chosen path). Missing ancestors are created 0700 as well.
+async fn prepare_parent(parent: &Path, euid: u32, strict_dir: &Path) -> std::io::Result<()> {
+    if parent == strict_dir {
         // Non-recursive create: if another user wins the race and creates
         // it first we get AlreadyExists, and the check below always runs
         // against whatever is actually there.
@@ -205,6 +215,13 @@ async fn prepare_parent(parent: &Path, euid: u32) -> std::io::Result<()> {
         Err(e) => Err(e),
         Ok(_) => Ok(()),
     }
+}
+
+/// True for errors that mean "refused as unsafe" rather than "unavailable":
+/// our own ownership/type checks, or `O_NOFOLLOW` hitting a symlink.
+fn is_refusal(e: &std::io::Error) -> bool {
+    e.raw_os_error() == Some(libc::ELOOP)
+        || (e.kind() == std::io::ErrorKind::PermissionDenied && e.raw_os_error().is_none())
 }
 
 fn unsafe_path(msg: &'static str) -> std::io::Error {
@@ -414,17 +431,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn prepare_parent_refuses_non_private_tmp_fallback() {
-        // Models another user pre-creating the per-uid /tmp fallback dir.
-        // Uses an unused fake euid so the real fallback dir is untouched.
-        let fake_euid = 4_000_000_000;
-        let dir = crate::config::journal_tmp_fallback_dir(fake_euid);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let res = prepare_parent(&dir, fake_euid).await;
-        std::fs::remove_dir(&dir).unwrap();
-        // 0755 and (for our real uid) wrong owner: both must refuse.
-        assert!(res.is_err());
+    async fn strict_dir_is_created_private_and_accepted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("fallback");
+        let euid = crate::config::euid();
+        prepare_parent(&dir, euid, &dir).await.unwrap();
+        assert_eq!(std::fs::metadata(&dir).unwrap().mode() & 0o777, 0o700);
+        // Re-run with the directory already present (second server start).
+        prepare_parent(&dir, euid, &dir).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn strict_dir_refuses_shared_modes_symlinks_files_and_foreign_owner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let euid = crate::config::euid();
+        for mode in [0o755, 0o770, 0o701] {
+            let dir = tmp.path().join(format!("m{mode:o}"));
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+            let err = prepare_parent(&dir, euid, &dir).await.unwrap_err();
+            assert!(is_refusal(&err), "mode {mode:o} must be refused");
+        }
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(prepare_parent(&link, euid, &link).await.is_err(), "symlink");
+        let file = tmp.path().join("file");
+        std::fs::write(&file, b"").unwrap();
+        assert!(prepare_parent(&file, euid, &file).await.is_err(), "file");
+        // A private dir owned by someone else (modelled with another euid).
+        assert!(
+            prepare_parent(&real, euid.wrapping_add(1), &real)
+                .await
+                .is_err(),
+            "foreign owner"
+        );
+        // Only the strict dir is checked; any other existing dir is trusted.
+        let shared = tmp.path().join("m755");
+        assert!(prepare_parent(&shared, euid, &real).await.is_ok());
     }
 
     #[tokio::test]

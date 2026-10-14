@@ -171,7 +171,7 @@ pub const JOURNAL_HEAD_CHARS: usize = 128;  // audit-journal summary cap
 
 | Var | Purpose | Default |
 |---|---|---|
-| `NETDIAG_JOURNAL` | JSONL tool-call audit journal path. Always-on; opened 0600 with `O_NOFOLLOW`, must be a regular file owned by the server's euid. An unwritable or unsafe path degrades to a `tracing::error` and the server continues without auditing. | `$XDG_STATE_HOME/mcp-netdiag-rs/journal.jsonl` (else `~/.local/state/…`); if that can't be opened (no `HOME`, read-only home) → `/tmp/mcp-netdiag-rs-<euid>/journal.jsonl` |
+| `NETDIAG_JOURNAL` | JSONL tool-call audit journal path. Always-on; opened 0600 with `O_NOFOLLOW`, must be a regular file owned by the server's euid. If no candidate can be opened, the server logs a `tracing::error` and continues without auditing. Empty = use the defaults. | `$XDG_STATE_HOME/mcp-netdiag-rs/journal.jsonl` (else `~/.local/state/…`); if that can't be opened (no `HOME`, read-only home) → `/tmp/mcp-netdiag-rs-<euid>/journal.jsonl` |
 | `NETDIAG_ALLOWLIST` | Comma-separated subset of built-in command keys. When set, only the listed commands run. **Narrowing only** — cannot add programs/args. | unset → all enabled |
 | `NETDIAG_ENABLE_PRIVILEGED` | Opt-in for the six privileged tools (`ping`, `traceroute`, `tcpdump_sample`, `firewall`, `conntrack`, `dmesg`) that require elevated capabilities (CAP_NET_RAW / CAP_NET_ADMIN / CAP_SYSLOG) or emit on-wire side effects. Comma-separated subset of those keys, or the `all` sentinel, or `none` / empty / unset → every privileged tool refused with `-32011`. Composes with `NETDIAG_ALLOWLIST`: a privileged opt-in cannot widen a narrower allowlist. | unset → all privileged disabled |
 | `RUST_LOG` | `tracing-subscriber` env filter. | `mcp_netdiag_rs=info` |
