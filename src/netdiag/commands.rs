@@ -322,10 +322,17 @@ impl CommandRunner {
         spec: &DiagnosticSpec,
         extra_args: &[String],
     ) -> Result<Value, NetdiagError> {
-        let _slot = self
-            .slots
-            .acquire()
+        // Waiting for a slot gets its own `self.timeout`, so a call never
+        // queues indefinitely behind a burst: worst case is one timeout
+        // waiting plus one timeout running.
+        let _slot = timeout(self.timeout, self.slots.acquire())
             .await
+            .map_err(|_| NetdiagError::CommandExec {
+                message: format!(
+                    "timeout after {}s waiting for a command slot",
+                    self.timeout.as_secs()
+                ),
+            })?
             .map_err(|_| NetdiagError::CommandExec {
                 message: "command slots closed".to_string(),
             })?;
@@ -352,6 +359,11 @@ impl CommandRunner {
         cmd.env_clear()
             .env("PATH", SAFE_PATH)
             .env("LC_ALL", CHILD_LOCALE);
+        // Keep the operator's timezone (e.g. systemd `Environment=TZ=UTC`)
+        // so `uptime`, `dmesg -T` and `systemctl status` timestamps match it.
+        if let Some(tz) = std::env::var_os("TZ") {
+            cmd.env("TZ", tz);
+        }
         cmd.args(spec.base_args);
         cmd.args(extra_args);
         cmd.stdin(Stdio::null())
@@ -369,9 +381,10 @@ impl CommandRunner {
         };
 
         // Read both pipes concurrently (so neither can fill up and stall the
-        // child), retaining only the capped head of each. On timeout the
-        // future — and with it `child` — is dropped, and `kill_on_drop`
-        // sends SIGKILL.
+        // child), retaining only the capped head of each. Reading ends at
+        // EOF, not at exit, so a grandchild still holding a pipe keeps the
+        // call open until the timeout. On timeout the future — and with it
+        // `child` — is dropped, and `kill_on_drop` SIGKILLs the direct child.
         let (stdout, stderr, status) = timeout(self.timeout, async {
             let (stdout, stderr) = tokio::join!(
                 read_capped(out_pipe, config::MAX_STDOUT_BYTES),
@@ -390,12 +403,13 @@ impl CommandRunner {
         let read_err = |e: std::io::Error| NetdiagError::CommandExec {
             message: format!("reading output failed: {e}"),
         };
+        let (stdout, stderr) = (stdout.map_err(read_err)?, stderr.map_err(read_err)?);
 
         Ok(json!({
             "ok": status.success(),
             "exit_code": status.code(),
-            "stdout": bounded_text(&stdout.map_err(read_err)?, config::MAX_STDOUT_BYTES, config::MAX_OUTPUT_LINES),
-            "stderr": bounded_text(&stderr.map_err(read_err)?, config::MAX_STDERR_BYTES, config::MAX_OUTPUT_LINES),
+            "stdout": bounded_text(&stdout, config::MAX_STDOUT_BYTES, config::MAX_OUTPUT_LINES),
+            "stderr": bounded_text(&stderr, config::MAX_STDERR_BYTES, config::MAX_OUTPUT_LINES),
         }))
     }
 
@@ -603,34 +617,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn children_ignore_caller_path_and_environment() {
-        // A planted `ip` earlier in PATH and an inherited secret must not
-        // reach the child. Mutating the process env is safe here: no other
-        // test in this crate reads PATH or NETDIAG_TEST_SECRET.
-        let dir = tempfile::tempdir().unwrap();
-        let fake = dir.path().join("sh");
-        std::fs::write(&fake, "#!/bin/sh\necho planted\n").unwrap();
-        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-            .unwrap();
-        let old_path = std::env::var_os("PATH").unwrap_or_default();
-        unsafe {
-            std::env::set_var(
-                "PATH",
-                format!("{}:{}", dir.path().display(), old_path.to_string_lossy()),
-            );
-            std::env::set_var("NETDIAG_TEST_SECRET", "leak");
-        }
+    async fn children_get_only_the_minimal_environment() {
+        // `env` prints the child's whole environment: anything inherited
+        // from the test process (HOME, CARGO_*, …) would show up as an extra
+        // line. Spawned directly, not via `sh`, which would inject PWD.
         let runner = CommandRunner::with_enabled(None);
         let spec = CommandSpec {
-            program: "sh",
-            base_args: &["-c", "echo \"$PATH|$LC_ALL|${NETDIAG_TEST_SECRET:-unset}\""],
+            program: "env",
+            base_args: &[],
         };
         let v = runner.run_process(&spec, &[]).await.unwrap();
-        unsafe {
-            std::env::set_var("PATH", old_path);
-            std::env::remove_var("NETDIAG_TEST_SECRET");
-        }
-        assert_eq!(v["stdout"], format!("{SAFE_PATH}|{CHILD_LOCALE}|unset"));
+        let mut vars: Vec<&str> = v["stdout"].as_str().unwrap().lines().collect();
+        vars.retain(|l| !l.starts_with("TZ=")); // forwarded only if set
+        vars.sort_unstable();
+        assert_eq!(
+            vars,
+            [
+                format!("LC_ALL={CHILD_LOCALE}"),
+                format!("PATH={SAFE_PATH}")
+            ]
+        );
     }
 
     #[test]

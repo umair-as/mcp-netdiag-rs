@@ -73,17 +73,20 @@ caller's `PATH` is ignored, so a writable directory such as
 `~/.local/bin` cannot shadow `ip` — important when the server is given
 ambient capabilities (e.g. systemd `AmbientCapabilities=`) that children
 inherit. Children start from an empty environment with only
-`PATH=SAFE_PATH` and `LC_ALL=C.UTF-8`, so nothing from the MCP host
-(`LD_PRELOAD`, `DBUS_SESSION_BUS_ADDRESS`, proxy settings, …) reaches
-them. Tools installed elsewhere (e.g. `/usr/local/sbin`, NixOS profiles)
-are reported as not found.
+`PATH=SAFE_PATH`, `LC_ALL=C.UTF-8` and — if the server has it — `TZ`, so
+nothing else from the MCP host (`LD_PRELOAD`, `DBUS_SESSION_BUS_ADDRESS`,
+proxy settings, …) reaches them. Tools installed elsewhere (e.g.
+`/usr/local/sbin`, which is deliberately excluded, or NixOS profiles) are
+reported as not found.
 
 ### 4. Bounded execution
 
 Every command runs under (`src/config.rs`):
 
-- `DEFAULT_TIMEOUT_SECS = 5` wall-clock cap; exceeded → `CommandExec`
-  (`-32012`) and the child is killed via `kill_on_drop(true)`.
+- `DEFAULT_TIMEOUT_SECS = 5` wall-clock cap on each command; exceeded →
+  `CommandExec` (`-32012`) and the child is killed via
+  `kill_on_drop(true)`. Waiting for a concurrency slot (below) has its own
+  5 s limit, so a call takes at most about 10 s end to end.
 - `MAX_STDOUT_BYTES = 64 KiB`, `MAX_STDERR_BYTES = 8 KiB` — captured
   output is truncated past these. The pipes are read incrementally and
   only the head is kept; the rest is drained and discarded, so memory

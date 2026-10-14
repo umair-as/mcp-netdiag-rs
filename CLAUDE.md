@@ -169,7 +169,7 @@ pub const JOURNAL_HEAD_CHARS: usize = 128;  // audit-journal summary cap
   at most `MAX_CONCURRENT_COMMANDS` run at once.
 - Programs are resolved only in `SAFE_PATH` (`/usr/sbin:/usr/bin:/sbin:/bin`),
   never via the caller's `PATH`; children get a cleared environment
-  (`PATH=SAFE_PATH`, `LC_ALL=C.UTF-8` only).
+  (`PATH=SAFE_PATH`, `LC_ALL=C.UTF-8`, plus `TZ` if set).
 
 **Environment variables:**
 
