@@ -60,9 +60,10 @@ Every caller-supplied token passes a typed validator in
   therefore rejected.)
 - `validate_capture_interface` (`net.tcpdump_sample` only) further
   requires a device entry with an `ifindex` under `/sys/class/net`, not
-  an all-digit name, and not one of the names libpcap reserves (`any`,
-  `nflog`, `nfqueue`). `tcpdump -i` otherwise also accepts libpcap pseudo-devices
-  (`any`, `nflog`, `nfqueue`, `dbus-system`, `dbus-session`,
+  an all-digit name, and not one of the common libpcap pseudo-device
+  names (`any`, `nflog`, `nfqueue`). `tcpdump -i` otherwise also accepts
+  libpcap pseudo-devices (`any`, `nflog`, `nfqueue`, `dbus-system`,
+  `dbus-session`,
   `bluetooth-monitor`, …) and numeric indexes into `tcpdump -D`, which
   would let a caller eavesdrop on D-Bus or bind a netfilter queue.
 - `validate_mac` — strict `aa:bb:cc:dd:ee:ff` shape, case-insensitive.

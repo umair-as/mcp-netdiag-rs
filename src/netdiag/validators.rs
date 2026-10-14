@@ -42,8 +42,10 @@ pub fn validate_interface(value: &str) -> Result<(), NetdiagError> {
 /// real network devices.
 pub const SYS_CLASS_NET: &str = "/sys/class/net";
 
-/// Names libpcap claims for itself before trying a real device, so they are
-/// refused even if a netdev of that name exists.
+/// Common libpcap pseudo-device names, refused even if a netdev of that name
+/// exists. (libpcap claims more, e.g. `dbus-*`, `bluetooth*`, `usbmon*`; those
+/// are rejected by the `/sys/class/net` check unless an admin creates such a
+/// netdev.)
 const PCAP_RESERVED: &[&str] = &["any", "nflog", "nfqueue"];
 
 /// Validate the interface handed to `tcpdump -i`. tcpdump also accepts
@@ -64,6 +66,13 @@ pub async fn validate_capture_interface(
             reason,
         })
     };
+    let not_an_interface = || {
+        invalid(
+            "not a network interface on this host (pseudo-devices such as `any`, \
+             `nflog` or `dbus-*` are not accepted)"
+                .to_string(),
+        )
+    };
     if value.bytes().all(|b| b.is_ascii_digit()) {
         return invalid(
             "numeric interface indexes are not accepted; use the interface name".to_string(),
@@ -78,12 +87,13 @@ pub async fn validate_capture_interface(
     // Requiring `ifindex` skips non-device entries such as `bonding_masters`.
     match tokio::fs::try_exists(sys_class_net.join(value).join("ifindex")).await {
         Ok(true) => Ok(()),
-        Ok(false) => invalid(
-            "not a network interface on this host (pseudo-devices such as `any`, \
-             `nflog` or `dbus-*` are not accepted)"
-                .to_string(),
-        ),
-        Err(e) => invalid(format!("could not check {}: {e}", sys_class_net.display())),
+        Ok(false) => not_an_interface(),
+        // NotADirectory: `<value>` is a plain file such as `bonding_masters`.
+        Err(e) if e.kind() == std::io::ErrorKind::NotADirectory => not_an_interface(),
+        // A host condition, not the caller's input.
+        Err(e) => Err(NetdiagError::CommandExec {
+            message: format!("could not check {}: {e}", sys_class_net.display()),
+        }),
     }
 }
 
@@ -238,9 +248,10 @@ mod tests {
         // A non-device entry (as `bonding_masters` is) must not pass.
         std::fs::write(sys.path().join("bonding_masters"), "").unwrap();
         assert!(validate_capture_interface("eth0", sys.path()).await.is_ok());
-        assert!(validate_capture_interface("bonding_masters", sys.path())
+        let err = validate_capture_interface("bonding_masters", sys.path())
             .await
-            .is_err());
+            .unwrap_err();
+        assert!(err.to_string().contains("not a network interface"), "{err}");
         for pseudo in ["any", "nflog", "nfqueue", "dbus-system", "dbus-session"] {
             let err = validate_capture_interface(pseudo, sys.path())
                 .await
