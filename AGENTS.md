@@ -33,7 +33,8 @@ tool edits a route, mutates a unit, or writes a file.
    the documented range are refused; stay within them.
 6. At most four commands run at once; extra calls queue (up to 5 s) and
    then run under their own 5 s timeout, so firing many calls in parallel
-   does not make them faster. A `-32012` "not found in …" error means the
+   does not make them faster. A call that cannot get a slot in time fails
+   with `-32012` "timeout after 5s waiting for a command slot". A `-32012` "not found in …" error means the
    tool is not installed in the server's fixed program directories — report
    it rather than retrying.
 

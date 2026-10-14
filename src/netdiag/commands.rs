@@ -628,15 +628,16 @@ mod tests {
         };
         let v = runner.run_process(&spec, &[]).await.unwrap();
         let mut vars: Vec<&str> = v["stdout"].as_str().unwrap().lines().collect();
-        vars.retain(|l| !l.starts_with("TZ=")); // forwarded only if set
         vars.sort_unstable();
-        assert_eq!(
-            vars,
-            [
-                format!("LC_ALL={CHILD_LOCALE}"),
-                format!("PATH={SAFE_PATH}")
-            ]
-        );
+        let mut expected = vec![
+            format!("LC_ALL={CHILD_LOCALE}"),
+            format!("PATH={SAFE_PATH}"),
+        ];
+        // TZ is forwarded only when the server has it (read, not mutated).
+        if let Some(tz) = std::env::var_os("TZ") {
+            expected.push(format!("TZ={}", tz.to_string_lossy()));
+        }
+        assert_eq!(vars, expected);
     }
 
     #[test]
