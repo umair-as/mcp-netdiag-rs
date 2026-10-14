@@ -167,6 +167,18 @@ All configuration is via environment variables — there is no config file.
 | `NETDIAG_JOURNAL` | Path to the JSONL tool-call audit journal. Always-on; an unwritable path degrades to a warning and the server keeps running without auditing. | `/tmp/mcp-netdiag-journal.jsonl` |
 | `RUST_LOG` | `tracing` filter. Logs go to **stderr only**, never stdout. | `mcp_netdiag_rs=info` |
 
+`NETDIAG_ALLOWLIST` keys are the tool names without their `net.`/`sys.`
+prefix (`routes`, `service_status`, …), except `net.mac_lookup`, whose key
+is `mac_table`. Unknown keys are ignored, so
+`NETDIAG_ALLOWLIST=routes,mac_lookup` enables only `net.routes`
+(`net.mac_lookup` is silently lost), and a list of only unknown keys
+disables every tool. `all` is not an allowlist key — leave the variable
+unset to enable everything.
+
+In `NETDIAG_ENABLE_PRIVILEGED`, `all` anywhere in the list enables every
+privileged tool (`ping,all` is the same as `all`), whereas `none` is only
+recognised as the whole value (`ping,none` enables `ping`).
+
 ## 🏗️ How it works
 
 ```text

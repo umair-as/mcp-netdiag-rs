@@ -32,7 +32,7 @@ pub struct RequiredInterfaceParams {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TargetParams {
-    /// IP address or hostname to inspect.
+    /// IP address to look up (hostnames are not resolved).
     pub target: String,
 }
 
