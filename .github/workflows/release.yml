@@ -125,11 +125,13 @@ jobs:
           fi
 
       - name: Generate release notes
-        # v4
-        uses: orhun/git-cliff-action@3d96a18cc4ec17e9dc69ddcc424ccafaf1f78ce2
+        uses: orhun/git-cliff-action@3d96a18cc4ec17e9dc69ddcc424ccafaf1f78ce2 # v4.9.0
         with:
           version: v2.13.1
           config: cliff.toml
+          # `inputs.version` is interpolated into the action's shell command.
+          # Safe only because "Validate release request" above has already
+          # restricted it to [0-9A-Za-z.-]; keep that check first and strict.
           args: --unreleased --tag v${{ inputs.version }} --strip header
         env:
           OUTPUT: RELEASE_NOTES.md
@@ -143,7 +145,10 @@ jobs:
             dist/
             RELEASE_NOTES.md
           if-no-files-found: error
-          retention-days: 1
+          # Re-running all jobs re-uploads under the same name in this run.
+          overwrite: true
+          # Long enough to re-run a failed `publish` job later.
+          retention-days: 7
 
   # Holds the write token but never checks out or runs repository code: it
   # only downloads the packaged assets and calls `gh release create`.

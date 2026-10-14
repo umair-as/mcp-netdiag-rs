@@ -44,10 +44,10 @@ Commit subjects drive classification (features/fixes/security/docs/etc — see
 ## 3. Pre-release checks (see SECURITY.md)
 
 - `cargo fmt --check`
-- `cargo clippy --all-targets -- -D warnings`
-- `cargo test`
-- `cargo build --release`
-- `cargo build --manifest-path examples/minimal-mcp-client/Cargo.toml`
+- `cargo clippy --locked --all-targets -- -D warnings`
+- `cargo test --locked`
+- `cargo build --locked --release`
+- `cargo build --locked --manifest-path examples/minimal-mcp-client/Cargo.toml`
 - `cargo audit`
 - `cargo deny check bans licenses sources`
 
