@@ -17,7 +17,7 @@ updates:
       prefix: "chore(deps)"
     labels: ["dependencies", "rust"]
     # rmcp majors are a deliberate, separately-scoped migration, not a routine
-    # bump: 1.7 -> 3.0 renames core SDK types (CallToolResult -> CallToolResponse)
+    # bump: 1.x -> 3.0 renames core SDK types (CallToolResult -> CallToolResponse)
     # and breaks the build. Suppress the auto-PR; the upgrade is tracked as its
     # own task. Remove this ignore when doing the migration.
     ignore:
