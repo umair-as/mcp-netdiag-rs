@@ -162,8 +162,8 @@ All configuration is via environment variables — there is no config file.
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `NETDIAG_ENABLE_PRIVILEGED` | Opt-in for the six 🔒 tools. Comma-separated subset of `{ping, traceroute, tcpdump_sample, firewall, conntrack, dmesg}`, the literal `all`, or `none`/empty. **Case-sensitive.** Composes with `NETDIAG_ALLOWLIST` by AND. | unset → all refused |
-| `NETDIAG_ALLOWLIST` | Comma-separated subset of built-in command keys. When set, only those run. **Narrowing only** — can disable built-ins, never add programs or arguments. | unset → all enabled |
+| `NETDIAG_ENABLE_PRIVILEGED` | Opt-in for the six 🔒 tools. Comma-separated subset of `{ping, traceroute, tcpdump_sample, firewall, conntrack, dmesg}`, the literal `all`, or `none`/empty. `all` anywhere in the list enables every privileged tool (`ping,all` = `all`). **Case-sensitive.** Composes with `NETDIAG_ALLOWLIST` by AND. | unset → all refused |
+| `NETDIAG_ALLOWLIST` | Comma-separated subset of built-in command keys — the tool name without its `net.`/`sys.` prefix (e.g. `routes`, `service_status`), except `net.mac_lookup`, whose key is `mac_table`. When set, only those run; unknown keys enable nothing. **Narrowing only** — can disable built-ins, never add programs or arguments. | unset → all enabled |
 | `NETDIAG_JOURNAL` | Path to the JSONL tool-call audit journal. Always-on; an unwritable path degrades to a warning and the server keeps running without auditing. | `/tmp/mcp-netdiag-journal.jsonl` |
 | `RUST_LOG` | `tracing` filter. Logs go to **stderr only**, never stdout. | `mcp_netdiag_rs=info` |
 
