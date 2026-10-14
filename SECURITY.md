@@ -75,8 +75,15 @@ Every command runs under (`src/config.rs`):
 - `DEFAULT_TIMEOUT_SECS = 5` wall-clock cap; exceeded → `CommandExec`
   (`-32012`) and the child is killed via `kill_on_drop(true)`.
 - `MAX_STDOUT_BYTES = 64 KiB`, `MAX_STDERR_BYTES = 8 KiB` — captured
-  output is truncated past these.
+  output is truncated past these. The pipes are read incrementally and
+  only the head is kept; the rest is drained and discarded, so memory
+  stays bounded even if a command (e.g. `conntrack -L` on a busy router)
+  prints hundreds of MB, and its exit status is still reported.
 - `MAX_OUTPUT_LINES = 512` — lines beyond this are dropped.
+- `MAX_CONCURRENT_COMMANDS = 4` — at most four diagnostics run at once;
+  further calls wait for a slot. Peak captured-output memory is therefore
+  about `4 × (64 + 8) KiB` however many calls an agent issues in
+  parallel.
 
 ### 5. Statelessness
 

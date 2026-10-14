@@ -26,6 +26,11 @@ pub const MAX_STDOUT_BYTES: usize = 64 * 1024;
 /// Maximum stderr bytes retained from a command before truncation.
 pub const MAX_STDERR_BYTES: usize = 8 * 1024;
 
+/// Maximum diagnostics running at once. Further calls wait for a slot, so
+/// peak memory for captured output stays bounded at roughly
+/// `MAX_CONCURRENT_COMMANDS * (MAX_STDOUT_BYTES + MAX_STDERR_BYTES)`.
+pub const MAX_CONCURRENT_COMMANDS: usize = 4;
+
 /// Maximum lines retained from a command's captured output.
 pub const MAX_OUTPUT_LINES: usize = 512;
 
