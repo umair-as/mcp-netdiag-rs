@@ -173,6 +173,27 @@ impl JournalWriter {
 /// fallback ([`crate::config::journal_tmp_fallback_dir`]), which sits in a
 /// world-writable parent and so must be ours and private.
 async fn prepare_parent(parent: &Path, euid: u32) -> std::io::Result<()> {
+    if parent == crate::config::journal_tmp_fallback_dir(euid) {
+        // Non-recursive create: if another user wins the race and creates
+        // it first we get AlreadyExists, and the check below always runs
+        // against whatever is actually there.
+        match tokio::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(parent)
+            .await
+        {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+        let meta = tokio::fs::symlink_metadata(parent).await?;
+        if !meta.is_dir() || meta.uid() != euid || meta.mode() & 0o077 != 0 {
+            return Err(unsafe_path(
+                "journal directory under /tmp is not a private directory owned by this user",
+            ));
+        }
+        return Ok(());
+    }
     match tokio::fs::symlink_metadata(parent).await {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             tokio::fs::DirBuilder::new()
@@ -182,14 +203,6 @@ async fn prepare_parent(parent: &Path, euid: u32) -> std::io::Result<()> {
                 .await
         }
         Err(e) => Err(e),
-        Ok(meta) if parent == crate::config::journal_tmp_fallback_dir(euid) => {
-            if !meta.is_dir() || meta.uid() != euid || meta.mode() & 0o077 != 0 {
-                return Err(unsafe_path(
-                    "journal directory under /tmp is not a private directory owned by this user",
-                ));
-            }
-            Ok(())
-        }
         Ok(_) => Ok(()),
     }
 }
