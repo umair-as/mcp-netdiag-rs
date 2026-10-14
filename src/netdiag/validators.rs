@@ -10,11 +10,91 @@
 //! (a leading `-` would be parsed by the underlying command as a CLI option,
 //! breaking the "no arbitrary flags" guarantee).
 
+use std::path::Path;
+
 use crate::errors::NetdiagError;
 
-/// Validate an interface (or systemd unit) name token.
+/// Longest Linux interface name (`IFNAMSIZ - 1`).
+const IFNAME_MAX: usize = 15;
+
+/// Validate a network interface name token. On top of [`validate_token`],
+/// apply the kernel's own `dev_valid_name` rules: at most 15 bytes, not `.`
+/// or `..`, and no `:` or `/` (so the name is also safe as a single path
+/// component under `/sys/class/net`).
 pub fn validate_interface(value: &str) -> Result<(), NetdiagError> {
-    validate_token("interface", value)
+    validate_token("interface", value)?;
+    let invalid = |reason: &str| {
+        Err(NetdiagError::InvalidParam {
+            name: "interface".to_string(),
+            reason: reason.to_string(),
+        })
+    };
+    if value.len() > IFNAME_MAX {
+        return invalid("must be <= 15 chars (Linux IFNAMSIZ)");
+    }
+    if value == "." || value == ".." || value.contains([':', '/']) {
+        return invalid("is not a valid Linux interface name");
+    }
+    Ok(())
+}
+
+/// Default root for [`validate_capture_interface`]: where the kernel lists
+/// real network devices.
+pub const SYS_CLASS_NET: &str = "/sys/class/net";
+
+/// Common libpcap pseudo-device names, refused even if a netdev of that name
+/// exists. (libpcap claims more, e.g. `dbus-*`, `bluetooth*`, `usbmon*`; those
+/// are rejected by the `/sys/class/net` check unless an admin creates such a
+/// netdev.)
+const PCAP_RESERVED: &[&str] = &["any", "nflog", "nfqueue"];
+
+/// Validate the interface handed to `tcpdump -i`. tcpdump also accepts
+/// libpcap pseudo-devices (`any`, `nflog`, `nfqueue`, `dbus-system`,
+/// `dbus-session`, `bluetooth-monitor`, …) and bare numbers as indexes
+/// into `tcpdump -D`, which reach far beyond a network interface — e.g.
+/// eavesdropping on D-Bus or binding a netfilter queue. Only names of real
+/// network devices (with an `ifindex` under `sys_class_net`, normally
+/// [`SYS_CLASS_NET`]) are accepted.
+pub async fn validate_capture_interface(
+    value: &str,
+    sys_class_net: &Path,
+) -> Result<(), NetdiagError> {
+    validate_interface(value)?;
+    let invalid = |reason: String| {
+        Err(NetdiagError::InvalidParam {
+            name: "interface".to_string(),
+            reason,
+        })
+    };
+    let not_an_interface = || {
+        invalid(
+            "not a network interface on this host (pseudo-devices such as `any`, \
+             `nflog` or `dbus-*` are not accepted)"
+                .to_string(),
+        )
+    };
+    if value.bytes().all(|b| b.is_ascii_digit()) {
+        return invalid(
+            "numeric interface indexes are not accepted; use the interface name".to_string(),
+        );
+    }
+    if PCAP_RESERVED.contains(&value) {
+        return invalid(format!(
+            "`{value}` is a libpcap pseudo-device, not an interface"
+        ));
+    }
+    // `validate_interface` guarantees `value` is one plain path component.
+    // Requiring `ifindex` skips non-device entries such as `bonding_masters`.
+    match tokio::fs::try_exists(sys_class_net.join(value).join("ifindex")).await {
+        Ok(true) => Ok(()),
+        Ok(false) => not_an_interface(),
+        // NotADirectory: `<value>` is a plain file such as `bonding_masters`.
+        Err(e) if e.kind() == std::io::ErrorKind::NotADirectory => not_an_interface(),
+        // A host condition, not the caller's input.
+        Err(e) => Err(NetdiagError::CommandExec {
+            message: format!("could not check {}: {e}", sys_class_net.display()),
+        }),
+    }
 }
 
 /// Validate a systemd unit name token.
@@ -146,6 +226,50 @@ mod tests {
         assert_eq!(err.code(), -32010);
         assert!(validate_interface("-i").is_err());
         assert!(validate_interface("--reset").is_err());
+    }
+
+    #[test]
+    fn validate_interface_applies_kernel_name_rules() {
+        assert!(validate_interface("enp0s31f6").is_ok());
+        assert!(validate_interface("eth0.100").is_ok());
+        assert!(validate_interface("a23456789012345").is_ok()); // 15 = IFNAMSIZ-1
+        assert!(validate_interface("a234567890123456").is_err());
+        assert!(validate_interface(".").is_err());
+        assert!(validate_interface("..").is_err());
+        assert!(validate_interface("eth0:1").is_err());
+        assert!(validate_interface("../lo").is_err());
+    }
+
+    #[tokio::test]
+    async fn capture_interface_must_exist_in_sys_class_net() {
+        let sys = tempfile::tempdir().unwrap();
+        std::fs::create_dir(sys.path().join("eth0")).unwrap();
+        std::fs::write(sys.path().join("eth0/ifindex"), "2\n").unwrap();
+        // A non-device entry (as `bonding_masters` is) must not pass.
+        std::fs::write(sys.path().join("bonding_masters"), "").unwrap();
+        assert!(validate_capture_interface("eth0", sys.path()).await.is_ok());
+        let err = validate_capture_interface("bonding_masters", sys.path())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not a network interface"), "{err}");
+        for pseudo in ["any", "nflog", "nfqueue", "dbus-system", "dbus-session"] {
+            let err = validate_capture_interface(pseudo, sys.path())
+                .await
+                .unwrap_err();
+            assert_eq!(err.code(), -32010, "{pseudo} must be rejected");
+        }
+    }
+
+    #[tokio::test]
+    async fn capture_interface_rejects_numeric_index_and_pcap_names() {
+        // `tcpdump -i 2` picks entry 2 of `tcpdump -D` (often `any`). Reject
+        // all-digit names even if such a device happened to exist.
+        let sys = tempfile::tempdir().unwrap();
+        for name in ["2", "any", "nflog"] {
+            std::fs::create_dir(sys.path().join(name)).unwrap();
+            std::fs::write(sys.path().join(name).join("ifindex"), "9\n").unwrap();
+            assert!(validate_capture_interface(name, sys.path()).await.is_err());
+        }
     }
 
     #[test]

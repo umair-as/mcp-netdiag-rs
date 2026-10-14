@@ -163,7 +163,8 @@ pub const JOURNAL_HEAD_CHARS: usize = 128;  // audit-journal summary cap
   (`netdiag/validators.rs`). Programs and base args are `'static` consts;
   callers may only append arguments that pass a validator
   (`validate_interface` / `validate_ip_or_host` / `validate_unit` /
-  `validate_mac`).
+  `validate_mac`; `net.tcpdump_sample` uses `validate_capture_interface`,
+  which also requires a device with an `ifindex` under `/sys/class/net`).
 - All commands run under a wall-clock timeout; output is byte- and
   line-bounded while it is read (excess is drained, never buffered), and
   at most `MAX_CONCURRENT_COMMANDS` run at once.

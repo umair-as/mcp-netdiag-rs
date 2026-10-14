@@ -101,7 +101,9 @@ pub struct ServiceStatusParams {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TcpdumpParams {
-    /// Interface to capture from.
+    /// Network interface to capture from. Must be a real interface (as listed
+    /// by `net.if_status`); pseudo-devices such as `any` and numeric indexes
+    /// are rejected.
     pub interface: String,
     /// Packets to capture (1-50, default 10).
     #[serde(default)]

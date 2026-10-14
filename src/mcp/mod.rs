@@ -15,6 +15,7 @@
 pub mod journal;
 pub mod params;
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use rmcp::{
@@ -30,7 +31,8 @@ use tracing::instrument;
 
 use crate::errors::NetdiagError;
 use crate::netdiag::validators::{
-    validate_interface, validate_ip_or_host, validate_mac, validate_unit,
+    validate_capture_interface, validate_interface, validate_ip_or_host, validate_mac,
+    validate_unit, SYS_CLASS_NET,
 };
 use crate::netdiag::{normalize_tool_result, CommandExecutor};
 use journal::{JournalEntry, JournalWriter};
@@ -47,6 +49,9 @@ pub struct NetdiagServer<R: CommandExecutor> {
     /// Tool-call audit journal. `None` means degraded mode (journal open
     /// failed at startup); dispatch then proceeds without logging.
     journal: Option<Arc<JournalWriter>>,
+    /// Root checked by [`validate_capture_interface`]; [`SYS_CLASS_NET`] in
+    /// production, a fixture directory in tests.
+    sys_class_net: PathBuf,
     tool_router: ToolRouter<Self>,
 }
 
@@ -58,6 +63,7 @@ impl<R: CommandExecutor> Clone for NetdiagServer<R> {
         Self {
             runner: Arc::clone(&self.runner),
             journal: self.journal.clone(),
+            sys_class_net: self.sys_class_net.clone(),
             tool_router: self.tool_router.clone(),
         }
     }
@@ -69,8 +75,17 @@ impl<R: CommandExecutor> NetdiagServer<R> {
         Self {
             runner: Arc::new(runner),
             journal,
+            sys_class_net: PathBuf::from(SYS_CLASS_NET),
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// Check `net.tcpdump_sample` interfaces against `path` instead of
+    /// [`SYS_CLASS_NET`], so tests do not depend on the host's interfaces.
+    /// Code-only (no env var): the sysfs root is part of the security check.
+    pub fn with_sys_class_net(mut self, path: impl Into<PathBuf>) -> Self {
+        self.sys_class_net = path.into();
+        self
     }
 
     /// Interface state and counters (`ip -j -s link show [dev <iface>]`).
@@ -479,7 +494,7 @@ impl<R: CommandExecutor> NetdiagServer<R> {
         params: Parameters<TcpdumpParams>,
     ) -> Result<CallToolResult, McpError> {
         let Parameters(p) = params;
-        validate_interface(&p.interface)?;
+        validate_capture_interface(&p.interface, &self.sys_class_net).await?;
         let count = bounded(p.count, "count", 1, 50)?.unwrap_or(10);
         let extra = vec![
             "-i".to_string(),
