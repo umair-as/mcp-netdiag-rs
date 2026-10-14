@@ -253,8 +253,10 @@ carries `status: "fail"` rather than the protocol returning an error.
 Every `tools/call` writes one `call` row and one `result` row to the
 JSONL journal at `NETDIAG_JOURNAL` (default
 `$XDG_STATE_HOME/mcp-netdiag-rs/journal.jsonl`, else
-`~/.local/state/mcp-netdiag-rs/journal.jsonl`, else
-`/tmp/mcp-netdiag-rs-<euid>/journal.jsonl` when `HOME` is unset).
+`~/.local/state/mcp-netdiag-rs/journal.jsonl`; if `HOME` is unset or
+that path cannot be opened — e.g. root on a read-only rootfs — the
+server falls back to `/tmp/mcp-netdiag-rs-<euid>/journal.jsonl`). An
+explicit `NETDIAG_JOURNAL` is the only candidate and never falls back.
 
 The journal is opened with `O_NOFOLLOW | O_NONBLOCK`, created mode
 0600 (a missing parent directory is created 0700), and the opened fd

@@ -45,8 +45,7 @@ async fn main() -> std::io::Result<()> {
     // Open the audit journal. Failure is non-fatal: the server runs in
     // degraded mode (no journaling, logged at error) so an unwritable or
     // unsafe journal path never blocks tool dispatch.
-    let journal_path = config::journal_path();
-    let journal = JournalWriter::try_open_arc(&journal_path).await;
+    let journal = JournalWriter::try_open_first(&config::journal_paths()).await;
 
     let server = NetdiagServer::new(CommandRunner::new(), journal);
 

@@ -107,24 +107,37 @@ impl JournalWriter {
         })
     }
 
-    /// Open `path` and wrap in `Arc`; on failure, log a warning and return
+    /// Open `path` and wrap in `Arc`; on failure, log an error and return
     /// `None` so callers stay in degraded mode without branching on
     /// `Result`.
     pub async fn try_open_arc(path: &Path) -> Option<Arc<Self>> {
-        match Self::open(path).await {
-            Ok(w) => {
-                tracing::info!(path = %path.display(), "journal opened");
-                Some(Arc::new(w))
-            }
-            Err(e) => {
-                error!(
+        Self::try_open_first(&[path.to_path_buf()]).await
+    }
+
+    /// Try each candidate in order (see [`crate::config::journal_paths`])
+    /// and keep the first that opens. Failures before the last candidate
+    /// log at warn; if every candidate fails, log at error and return
+    /// `None` (degraded mode).
+    pub async fn try_open_first(paths: &[PathBuf]) -> Option<Arc<Self>> {
+        for (i, path) in paths.iter().enumerate() {
+            match Self::open(path).await {
+                Ok(w) => {
+                    tracing::info!(path = %path.display(), "journal opened");
+                    return Some(Arc::new(w));
+                }
+                Err(e) if i + 1 < paths.len() => warn!(
+                    error = %e,
+                    path = %path.display(),
+                    "journal open failed — trying fallback path"
+                ),
+                Err(e) => error!(
                     error = %e,
                     path = %path.display(),
                     "journal open failed — continuing in degraded mode (no auditing)"
-                );
-                None
+                ),
             }
         }
+        None
     }
 
     /// Path the journal was opened at — surfaced for diagnostics / tests.
@@ -404,6 +417,17 @@ mod tests {
     #[tokio::test]
     async fn open_refuses_non_regular_file() {
         assert!(JournalWriter::open(Path::new("/dev/null")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn try_open_first_falls_back_past_unwritable_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let good = tmp.path().join("journal.jsonl");
+        let paths = [PathBuf::from("/proc/1/no-such-journal"), good.clone()];
+        let w = JournalWriter::try_open_first(&paths)
+            .await
+            .expect("second candidate must open");
+        assert_eq!(w.path(), good);
     }
 
     #[tokio::test]
