@@ -140,7 +140,9 @@ netdiag has no session machinery — this is intentional and load-bearing.
 Each `tools/call` resolves a command, runs it, and returns. There is no
 `session_id`, no state map, no locking. rmcp dispatches concurrently, but
 handlers share nothing mutable, so concurrency needs no extra guarding — no
-per-call mutex is required. The journal's `session_id` field is fixed to
+per-call mutex is required. The one shared primitive is the runner's
+command-slot semaphore (`MAX_CONCURRENT_COMMANDS`): a resource cap, not
+state. The journal's `session_id` field is fixed to
 `"none"` so rows keep one stable shape.
 
 ## 6  Config & safety
@@ -151,6 +153,7 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 5;
 pub const MAX_STDOUT_BYTES: usize = 64 * 1024;
 pub const MAX_STDERR_BYTES: usize = 8 * 1024;
 pub const MAX_OUTPUT_LINES: usize = 512;
+pub const MAX_CONCURRENT_COMMANDS: usize = 4; // command-slot semaphore
 pub const EVIDENCE_MAX_CHARS: usize = 500;  // `evidence` field cap
 pub const JOURNAL_HEAD_CHARS: usize = 128;  // audit-journal summary cap
 ```
@@ -162,7 +165,11 @@ pub const JOURNAL_HEAD_CHARS: usize = 128;  // audit-journal summary cap
   (`validate_interface` / `validate_ip_or_host` / `validate_unit` /
   `validate_mac`).
 - All commands run under a wall-clock timeout; output is byte- and
-  line-bounded.
+  line-bounded while it is read (excess is drained, never buffered), and
+  at most `MAX_CONCURRENT_COMMANDS` run at once.
+- Programs are resolved only in `SAFE_PATH` (`/usr/sbin:/usr/bin:/sbin:/bin`),
+  never via the caller's `PATH`; children get a cleared environment
+  (`PATH=SAFE_PATH`, `LC_ALL=C.UTF-8`, plus `TZ` if set).
 
 **Environment variables:**
 

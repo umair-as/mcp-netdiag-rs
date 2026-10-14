@@ -12,11 +12,16 @@
 //! it never adds programs or arguments.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::{json, Value};
 use tokio::fs;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
+use tokio::sync::Semaphore;
 use tokio::time::timeout;
 
 use super::CommandExecutor;
@@ -31,6 +36,17 @@ pub struct CommandSpec {
     pub program: &'static str,
     pub base_args: &'static [&'static str],
 }
+
+/// The only directories a [`CommandSpec::program`] is looked up in, in
+/// order. The caller's `PATH` is never consulted, so a writable directory
+/// early in it (e.g. `~/.local/bin`) cannot shadow `ip` — which matters when
+/// the server runs with ambient capabilities that children inherit. Also the
+/// `PATH` children see, after the environment is cleared.
+pub const SAFE_PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin";
+
+/// Locale for every child: deterministic, untranslated output, still
+/// UTF-8-clean for journal/log text. Falls back to `C` where absent.
+const CHILD_LOCALE: &str = "C.UTF-8";
 
 /// A pinned diagnostic operation.
 #[derive(Debug, Clone)]
@@ -60,6 +76,9 @@ pub struct CommandRunner {
     allowlist: HashMap<&'static str, DiagnosticSpec>,
     privileged_enabled: HashSet<String>,
     timeout: Duration,
+    /// Caps concurrently running diagnostics at
+    /// [`config::MAX_CONCURRENT_COMMANDS`]; shared by clones of the runner.
+    slots: Arc<Semaphore>,
 }
 
 impl Default for CommandRunner {
@@ -290,16 +309,33 @@ impl CommandRunner {
             allowlist,
             privileged_enabled: privileged_enabled.clone(),
             timeout: config::default_timeout(),
+            slots: Arc::new(Semaphore::new(config::MAX_CONCURRENT_COMMANDS)),
         }
     }
 
     /// Spawn `spec` with the validated `extra_args` appended, enforcing the
-    /// wall-clock timeout and bounding the captured output.
+    /// wall-clock timeout and bounding the captured output. Waits for one of
+    /// [`config::MAX_CONCURRENT_COMMANDS`] slots first, so a burst of
+    /// concurrent calls cannot multiply memory use or child processes.
     async fn run_spec(
         &self,
         spec: &DiagnosticSpec,
         extra_args: &[String],
     ) -> Result<Value, NetdiagError> {
+        // Waiting for a slot gets its own `self.timeout`, so a call never
+        // queues indefinitely behind a burst: worst case is one timeout
+        // waiting plus one timeout running.
+        let _slot = timeout(self.timeout, self.slots.acquire())
+            .await
+            .map_err(|_| NetdiagError::CommandExec {
+                message: format!(
+                    "timeout after {}s waiting for a command slot",
+                    self.timeout.as_secs()
+                ),
+            })?
+            .map_err(|_| NetdiagError::CommandExec {
+                message: "command slots closed".to_string(),
+            })?;
         match spec {
             DiagnosticSpec::Process(process) => self.run_process(process, extra_args).await,
             DiagnosticSpec::File { path } => self.read_file(path, extra_args).await,
@@ -311,36 +347,69 @@ impl CommandRunner {
         spec: &CommandSpec,
         extra_args: &[String],
     ) -> Result<Value, NetdiagError> {
-        let mut cmd = Command::new(spec.program);
+        let program =
+            resolve_program(spec.program)
+                .await
+                .ok_or_else(|| NetdiagError::CommandExec {
+                    message: format!("spawn failed: `{}` not found in {SAFE_PATH}", spec.program),
+                })?;
+        let mut cmd = Command::new(program);
+        // Start children from an empty environment: nothing from the MCP
+        // host (DBUS_SESSION_BUS_ADDRESS, LD_PRELOAD, proxies, ...) leaks in.
+        cmd.env_clear()
+            .env("PATH", SAFE_PATH)
+            .env("LC_ALL", CHILD_LOCALE);
+        // Keep the operator's timezone (e.g. systemd `Environment=TZ=UTC`)
+        // so `uptime`, `dmesg -T` and `systemctl status` timestamps match it.
+        if let Some(tz) = std::env::var_os("TZ") {
+            cmd.env("TZ", tz);
+        }
         cmd.args(spec.base_args);
         cmd.args(extra_args);
-        cmd.kill_on_drop(true);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
 
-        let output = timeout(self.timeout, cmd.output())
-            .await
-            .map_err(|_| NetdiagError::CommandExec {
-                message: format!("timeout after {}s", self.timeout.as_secs()),
-            })?
-            .map_err(|e| NetdiagError::CommandExec {
-                message: format!("spawn failed: {e}"),
-            })?;
+        let mut child = cmd.spawn().map_err(|e| NetdiagError::CommandExec {
+            message: format!("spawn failed: {e}"),
+        })?;
+        let (Some(out_pipe), Some(err_pipe)) = (child.stdout.take(), child.stderr.take()) else {
+            return Err(NetdiagError::CommandExec {
+                message: "child stdio was not captured".to_string(),
+            });
+        };
 
-        let stdout = bounded_text(
-            &output.stdout,
-            config::MAX_STDOUT_BYTES,
-            config::MAX_OUTPUT_LINES,
-        );
-        let stderr = bounded_text(
-            &output.stderr,
-            config::MAX_STDERR_BYTES,
-            config::MAX_OUTPUT_LINES,
-        );
+        // Read both pipes concurrently (so neither can fill up and stall the
+        // child), retaining only the capped head of each. Reading ends at
+        // EOF, not at exit, so a grandchild still holding a pipe keeps the
+        // call open until the timeout. On timeout the future — and with it
+        // `child` — is dropped, and `kill_on_drop` SIGKILLs the direct child.
+        let (stdout, stderr, status) = timeout(self.timeout, async {
+            let (stdout, stderr) = tokio::join!(
+                read_capped(out_pipe, config::MAX_STDOUT_BYTES),
+                read_capped(err_pipe, config::MAX_STDERR_BYTES),
+            );
+            let status = child.wait().await;
+            (stdout, stderr, status)
+        })
+        .await
+        .map_err(|_| NetdiagError::CommandExec {
+            message: format!("timeout after {}s", self.timeout.as_secs()),
+        })?;
+        let status = status.map_err(|e| NetdiagError::CommandExec {
+            message: format!("wait failed: {e}"),
+        })?;
+        let read_err = |e: std::io::Error| NetdiagError::CommandExec {
+            message: format!("reading output failed: {e}"),
+        };
+        let (stdout, stderr) = (stdout.map_err(read_err)?, stderr.map_err(read_err)?);
 
         Ok(json!({
-            "ok": output.status.success(),
-            "exit_code": output.status.code(),
-            "stdout": stdout,
-            "stderr": stderr,
+            "ok": status.success(),
+            "exit_code": status.code(),
+            "stdout": bounded_text(&stdout, config::MAX_STDOUT_BYTES, config::MAX_OUTPUT_LINES),
+            "stderr": bounded_text(&stderr, config::MAX_STDERR_BYTES, config::MAX_OUTPUT_LINES),
         }))
     }
 
@@ -351,14 +420,16 @@ impl CommandRunner {
             });
         }
 
-        let bytes = timeout(self.timeout, fs::read(path))
-            .await
-            .map_err(|_| NetdiagError::CommandExec {
-                message: format!("timeout after {}s", self.timeout.as_secs()),
-            })?
-            .map_err(|e| NetdiagError::CommandExec {
-                message: format!("read failed: {e}"),
-            })?;
+        let bytes = timeout(self.timeout, async {
+            read_capped(fs::File::open(path).await?, config::MAX_STDOUT_BYTES).await
+        })
+        .await
+        .map_err(|_| NetdiagError::CommandExec {
+            message: format!("timeout after {}s", self.timeout.as_secs()),
+        })?
+        .map_err(|e| NetdiagError::CommandExec {
+            message: format!("read failed: {e}"),
+        })?;
 
         Ok(json!({
             "ok": true,
@@ -391,6 +462,22 @@ impl CommandExecutor for CommandRunner {
     }
 }
 
+/// Find `program` as an executable regular file in the first [`SAFE_PATH`]
+/// directory that has it. `program` is a `'static` allowlist name, never
+/// caller input.
+async fn resolve_program(program: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    for dir in SAFE_PATH.split(':') {
+        let candidate = Path::new(dir).join(program);
+        if let Ok(meta) = tokio::fs::metadata(&candidate).await {
+            if meta.is_file() && meta.permissions().mode() & 0o111 != 0 {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 /// Pure privileged gating check: `Ok(())` if `key` is not privileged, or if the
 /// caller's opt-in set admits it. `Err(PrivilegedDisabled)` otherwise. Kept
 /// side-effect-free so the gating logic is unit-testable without any
@@ -420,6 +507,23 @@ pub(crate) fn check_privileged(
     })
 }
 
+/// Read `reader` to EOF, keeping at most `max_bytes` and discarding the
+/// rest. Draining (rather than stopping) lets the child finish normally, so
+/// its exit status stays meaningful, while memory stays bounded by
+/// `max_bytes` no matter how much it prints.
+async fn read_capped<R: AsyncRead + Unpin>(
+    mut reader: R,
+    max_bytes: usize,
+) -> std::io::Result<Vec<u8>> {
+    let mut head = Vec::new();
+    (&mut reader)
+        .take(max_bytes as u64)
+        .read_to_end(&mut head)
+        .await?;
+    tokio::io::copy(&mut reader, &mut tokio::io::sink()).await?;
+    Ok(head)
+}
+
 /// Clip raw command output to `max_bytes` then `max_lines`, decoding with
 /// UTF-8 lossy conversion. The byte clip lands first so a pathological
 /// single-line blob cannot blow the buffer before the line clip applies.
@@ -446,6 +550,95 @@ fn bounded_text(bytes: &[u8], max_bytes: usize, max_lines: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sh(script: &'static [&'static str]) -> CommandSpec {
+        CommandSpec {
+            program: "sh",
+            base_args: script,
+        }
+    }
+
+    #[tokio::test]
+    async fn read_capped_keeps_head_and_drains_rest() {
+        let src = tokio::io::repeat(b'x').take(10 * 1024 * 1024);
+        let head = read_capped(src, 1024).await.unwrap();
+        assert_eq!(head.len(), 1024);
+    }
+
+    #[tokio::test]
+    async fn huge_output_is_capped_and_exit_status_preserved() {
+        // 16 MiB on stdout, 1 MiB on stderr, then a non-zero exit: memory
+        // stays at the caps and the real exit code still comes through.
+        let runner = CommandRunner::with_enabled(None);
+        let spec = sh(&[
+            "-c",
+            "head -c 16777216 /dev/zero | tr '\\0' 'a'; \
+             head -c 1048576 /dev/zero | tr '\\0' 'b' >&2; exit 3",
+        ]);
+        let v = runner.run_process(&spec, &[]).await.unwrap();
+        assert_eq!(v["exit_code"], 3);
+        assert_eq!(v["ok"], false);
+        assert_eq!(
+            v["stdout"].as_str().unwrap().len(),
+            config::MAX_STDOUT_BYTES
+        );
+        assert_eq!(
+            v["stderr"].as_str().unwrap().len(),
+            config::MAX_STDERR_BYTES
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_runs_are_limited_to_slot_count() {
+        let runner = CommandRunner::with_enabled(None);
+        let spec = DiagnosticSpec::Process(sh(&["-c", "sleep 0.3"]));
+        let start = std::time::Instant::now();
+        let mut set = tokio::task::JoinSet::new();
+        for _ in 0..=config::MAX_CONCURRENT_COMMANDS {
+            let (runner, spec) = (runner.clone(), spec.clone());
+            set.spawn(async move { runner.run_spec(&spec, &[]).await });
+        }
+        while let Some(r) = set.join_next().await {
+            assert_eq!(r.unwrap().unwrap()["exit_code"], 0);
+        }
+        // One run over the limit forces a second 0.3 s round.
+        assert!(start.elapsed() >= Duration::from_millis(600));
+    }
+
+    #[tokio::test]
+    async fn resolve_program_uses_fixed_dirs_only() {
+        let sh = resolve_program("sh")
+            .await
+            .expect("sh is in a SAFE_PATH dir");
+        assert!(SAFE_PATH.split(':').any(|d| sh.starts_with(d)));
+        assert!(resolve_program("definitely-not-a-netdiag-program")
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn children_get_only_the_minimal_environment() {
+        // `env` prints the child's whole environment: anything inherited
+        // from the test process (HOME, CARGO_*, …) would show up as an extra
+        // line. Spawned directly, not via `sh`, which would inject PWD.
+        let runner = CommandRunner::with_enabled(None);
+        let spec = CommandSpec {
+            program: "env",
+            base_args: &[],
+        };
+        let v = runner.run_process(&spec, &[]).await.unwrap();
+        let mut vars: Vec<&str> = v["stdout"].as_str().unwrap().lines().collect();
+        vars.sort_unstable();
+        let mut expected = vec![
+            format!("LC_ALL={CHILD_LOCALE}"),
+            format!("PATH={SAFE_PATH}"),
+        ];
+        // TZ is forwarded only when the server has it (read, not mutated).
+        if let Some(tz) = std::env::var_os("TZ") {
+            expected.push(format!("TZ={}", tz.to_string_lossy()));
+        }
+        assert_eq!(vars, expected);
+    }
 
     #[test]
     fn new_runner_has_all_commands() {

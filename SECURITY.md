@@ -63,20 +63,40 @@ advertised in the `schemars` input schema.
 ### 3. No shell
 
 Every command runs via `tokio::process::Command::new(program).args(...)`.
-There is no `sh -c`, no string interpolation, no environment
-inheritance beyond what tokio's default does. Shell metacharacters in
+There is no `sh -c` and no string interpolation. Shell metacharacters in
 inputs are blocked by the validators above, but even if a token slipped
 through, the absence of a shell means it cannot do anything.
+
+Programs are resolved only in the fixed directories
+`/usr/sbin:/usr/bin:/sbin:/bin` (`SAFE_PATH` in `commands.rs`); the
+caller's `PATH` is ignored, so a writable directory such as
+`~/.local/bin` cannot shadow `ip` — important when the server is given
+ambient capabilities (e.g. systemd `AmbientCapabilities=`) that children
+inherit. Children start from an empty environment with only
+`PATH=SAFE_PATH`, `LC_ALL=C.UTF-8` and — if the server has it — `TZ`, so
+nothing else from the MCP host (`LD_PRELOAD`, `DBUS_SESSION_BUS_ADDRESS`,
+proxy settings, …) reaches them. Tools installed elsewhere (e.g.
+`/usr/local/sbin`, which is deliberately excluded, or NixOS profiles) are
+reported as not found.
 
 ### 4. Bounded execution
 
 Every command runs under (`src/config.rs`):
 
-- `DEFAULT_TIMEOUT_SECS = 5` wall-clock cap; exceeded → `CommandExec`
-  (`-32012`) and the child is killed via `kill_on_drop(true)`.
+- `DEFAULT_TIMEOUT_SECS = 5` wall-clock cap on each command; exceeded →
+  `CommandExec` (`-32012`) and the child is killed via
+  `kill_on_drop(true)`. Waiting for a concurrency slot (below) has its own
+  5 s limit, so a call takes at most about 10 s end to end.
 - `MAX_STDOUT_BYTES = 64 KiB`, `MAX_STDERR_BYTES = 8 KiB` — captured
-  output is truncated past these.
+  output is truncated past these. The pipes are read incrementally and
+  only the head is kept; the rest is drained and discarded, so memory
+  stays bounded even if a command (e.g. `conntrack -L` on a busy router)
+  prints hundreds of MB, and its exit status is still reported.
 - `MAX_OUTPUT_LINES = 512` — lines beyond this are dropped.
+- `MAX_CONCURRENT_COMMANDS = 4` — at most four diagnostics run at once;
+  further calls wait for a slot. Peak captured-output memory is therefore
+  about `4 × (64 + 8) KiB` however many calls an agent issues in
+  parallel.
 
 ### 5. Statelessness
 

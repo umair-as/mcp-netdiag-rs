@@ -85,5 +85,6 @@ sequenceDiagram
 - Read-only diagnostics only (no config mutation commands).
 - Allowlisted commands only.
 - Bounded execution time (`timeout`).
-- Bounded output size/line count.
+- Bounded output size/line count, enforced while reading (memory stays bounded).
+- At most 4 commands run concurrently.
 - Input validation for interface/target/mac fields.
