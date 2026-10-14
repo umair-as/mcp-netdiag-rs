@@ -63,9 +63,9 @@ Every caller-supplied token passes a typed validator in
   an all-digit name, and not one of the common libpcap pseudo-device
   names (`any`, `nflog`, `nfqueue`). `tcpdump -i` otherwise also accepts
   libpcap pseudo-devices (`any`, `nflog`, `nfqueue`, `dbus-system`,
-  `dbus-session`,
-  `bluetooth-monitor`, …) and numeric indexes into `tcpdump -D`, which
-  would let a caller eavesdrop on D-Bus or bind a netfilter queue.
+  `dbus-session`, `bluetooth-monitor`, …) and numeric indexes into
+  `tcpdump -D`, which would let a caller eavesdrop on D-Bus or bind a
+  netfilter queue.
 - `validate_mac` — strict `aa:bb:cc:dd:ee:ff` shape, case-insensitive.
 
 Integer bounds (`count`, `timeout_secs`, `max_hops`, `lines`) are
