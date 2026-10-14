@@ -203,10 +203,10 @@ launched by an MCP client, not driven by hand.
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-cargo build --release
-cargo build --manifest-path examples/minimal-mcp-client/Cargo.toml
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --locked --release
+cargo build --locked --manifest-path examples/minimal-mcp-client/Cargo.toml
 ```
 
 Supply-chain checks (run in CI, or locally):

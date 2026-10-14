@@ -207,10 +207,10 @@ pub const JOURNAL_HEAD_CHARS: usize = 128;  // audit-journal summary cap
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-cargo build --release
-cargo build --manifest-path examples/minimal-mcp-client/Cargo.toml
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo build --locked --release
+cargo build --locked --manifest-path examples/minimal-mcp-client/Cargo.toml
 ```
 
 All five must pass before reporting a task done.

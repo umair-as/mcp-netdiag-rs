@@ -3,6 +3,8 @@
 This project releases via a single manually-dispatched GitHub Actions
 workflow (`.github/workflows/release.yml`) that checks, builds, tags, and
 publishes in one run — no separate release branch or tag-push trigger.
+The run has two jobs: `build` (read-only token) and `publish` (the only job
+with `contents: write`, which runs no repository code).
 
 ## 1. Version bump
 
@@ -42,10 +44,10 @@ Commit subjects drive classification (features/fixes/security/docs/etc — see
 ## 3. Pre-release checks (see SECURITY.md)
 
 - `cargo fmt --check`
-- `cargo clippy --all-targets -- -D warnings`
-- `cargo test`
-- `cargo build --release`
-- `cargo build --manifest-path examples/minimal-mcp-client/Cargo.toml`
+- `cargo clippy --locked --all-targets -- -D warnings`
+- `cargo test --locked`
+- `cargo build --locked --release`
+- `cargo build --locked --manifest-path examples/minimal-mcp-client/Cargo.toml`
 - `cargo audit`
 - `cargo deny check bans licenses sources`
 
@@ -67,8 +69,10 @@ The workflow validates the version, re-runs the full check suite, builds the
 release binary, verifies the built binary reports `mcp-netdiag-rs X.Y.Z` via
 `--version`, packages
 `mcp-netdiag-rs-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` + its `.sha256`,
-generates the GitHub Release notes from `cliff.toml` via git-cliff, and
-creates the `vX.Y.Z` tag plus the GitHub Release with the binary attached.
+and generates the GitHub Release notes from `cliff.toml` via git-cliff — all
+in the read-only `build` job, which uploads the assets as an artifact. The
+`publish` job then downloads them and creates the `vX.Y.Z` tag plus the
+GitHub Release with the binary attached.
 
 ## Choosing the version bump
 
