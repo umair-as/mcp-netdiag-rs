@@ -30,7 +30,8 @@ tool edits a route, mutates a unit, or writes a file.
    error — pass clean tokens (e.g. `eth0`, `8.8.8.8`, `ssh.service`).
    `net.tcpdump_sample` only accepts a real network interface listed by
    `net.if_status` — not `any`, other libpcap pseudo-devices, or a numeric
-   index.
+   index; an unknown interface there is a `-32010` protocol error rather
+   than a `status: "fail"` result.
 5. Numeric bounds (`count`, `timeout_secs`, `max_hops`, `lines`) are
    enforced at runtime, not just advertised in the schema. Requests outside
    the documented range are refused; stay within them.

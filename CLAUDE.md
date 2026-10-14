@@ -161,7 +161,7 @@ pub const JOURNAL_HEAD_CHARS: usize = 128;  // audit-journal summary cap
   callers may only append arguments that pass a validator
   (`validate_interface` / `validate_ip_or_host` / `validate_unit` /
   `validate_mac`; `net.tcpdump_sample` uses `validate_capture_interface`,
-  which also requires the name to exist under `/sys/class/net`).
+  which also requires a device with an `ifindex` under `/sys/class/net`).
 - All commands run under a wall-clock timeout; output is byte- and
   line-bounded.
 

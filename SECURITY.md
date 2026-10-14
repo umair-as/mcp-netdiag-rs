@@ -50,15 +50,18 @@ add programs or arguments. See CLAUDE.md §6.
 Every caller-supplied token passes a typed validator in
 `src/netdiag/validators.rs`:
 
-- `validate_interface` / `validate_unit` / `validate_ip_or_host` —
-  non-empty, ≤ 128 chars, restricted character class
-  (`[A-Za-z0-9.:_/-]`, plus `@` for unit names), and **must not start
-  with `-`** (argv-flag-injection guard; see PR #3).
-- `validate_interface` additionally applies the kernel's interface-name
-  rules: ≤ 15 chars (`IFNAMSIZ - 1`), not `.` / `..`, no `:` or `/`.
+- `validate_unit` / `validate_ip_or_host` — non-empty, ≤ 128 chars,
+  restricted character class (`[A-Za-z0-9.:_/-]`, plus `@` for unit
+  names), and **must not start with `-`** (argv-flag-injection guard;
+  see PR #3).
+- `validate_interface` — the kernel's interface-name rules: ≤ 15 chars
+  (`IFNAMSIZ - 1`), characters from `[A-Za-z0-9._-]`, not `.` / `..`,
+  and must not start with `-`. (Alias labels such as `eth0:1` are
+  therefore rejected.)
 - `validate_capture_interface` (`net.tcpdump_sample` only) further
-  requires the name to exist under `/sys/class/net` and not be all
-  digits. `tcpdump -i` otherwise also accepts libpcap pseudo-devices
+  requires a device entry with an `ifindex` under `/sys/class/net`, not
+  an all-digit name, and not one of the names libpcap reserves (`any`,
+  `nflog`, `nfqueue`). `tcpdump -i` otherwise also accepts libpcap pseudo-devices
   (`any`, `nflog`, `nfqueue`, `dbus-system`, `dbus-session`,
   `bluetooth-monitor`, …) and numeric indexes into `tcpdump -D`, which
   would let a caller eavesdrop on D-Bus or bind a netfilter queue.

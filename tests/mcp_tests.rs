@@ -54,9 +54,15 @@ impl CommandExecutor for StubRunner {
     }
 }
 
+/// Committed stand-in for `/sys/class/net` (only `lo/ifindex`), so the
+/// `net.tcpdump_sample` interface check never depends on the test host.
+fn fixture_sys_class_net() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sys-class-net")
+}
+
 /// Server backed by [`StubRunner`] with no journal.
 fn stub_server() -> NetdiagServer<StubRunner> {
-    NetdiagServer::new(StubRunner, None)
+    NetdiagServer::new(StubRunner, None).with_sys_class_net(fixture_sys_class_net())
 }
 
 /// Drive the rmcp server over a duplex pipe: send a sequence of MCP request
@@ -321,11 +327,12 @@ async fn call_net_tcpdump_sample_rejects_out_of_range_count() {
     let resp = handshake_then_call(
         stub_server(),
         "net.tcpdump_sample",
-        // `lo` exists on every Linux host, so only the count can fail.
+        // `lo` exists in the sysfs fixture, so only the count can fail.
         json!({"interface": "lo", "count": 500}),
     )
     .await;
     assert_eq!(rpc_error_code(&resp), -32010);
+    assert_eq!(resp["error"]["data"]["name"], "count");
 }
 
 #[tokio::test]
@@ -433,7 +440,8 @@ async fn disabled_command_returns_not_allowed() {
     // the runner rejects the disabled key with CommandNotAllowed (-32011)
     // before spawning anything.
     let enabled: HashSet<String> = ["ping"].iter().map(|s| s.to_string()).collect();
-    let server = NetdiagServer::new(CommandRunner::with_enabled(Some(&enabled)), None);
+    let server = NetdiagServer::new(CommandRunner::with_enabled(Some(&enabled)), None)
+        .with_sys_class_net(fixture_sys_class_net());
     let resp = handshake_then_call(server, "net.routes", json!({})).await;
     assert_eq!(rpc_error_code(&resp), -32011);
 }
@@ -456,7 +464,8 @@ const PRIVILEGED_TOOLS: &[&str] = &[
 async fn tools_list_still_advertises_privileged_when_disabled() {
     // Disabled privileged tools must remain visible in tools/list — mirrors the
     // existing NETDIAG_ALLOWLIST behavior. The refusal happens at call time.
-    let server = NetdiagServer::new(CommandRunner::with_layers(None, &HashSet::new()), None);
+    let server = NetdiagServer::new(CommandRunner::with_layers(None, &HashSet::new()), None)
+        .with_sys_class_net(fixture_sys_class_net());
     let responses = roundtrip(
         server,
         &[
@@ -503,7 +512,8 @@ async fn tools_list_marks_privileged_in_description_and_open_world_hint() {
                 .collect(),
         ),
         None,
-    );
+    )
+    .with_sys_class_net(fixture_sys_class_net());
     let responses = roundtrip(
         server,
         &[
@@ -549,7 +559,8 @@ async fn tools_list_wire_emitting_privileged_tools_flip_read_only_and_idempotent
                 .collect(),
         ),
         None,
-    );
+    )
+    .with_sys_class_net(fixture_sys_class_net());
     let responses = roundtrip(
         server,
         &[
@@ -594,7 +605,8 @@ async fn tools_list_privileged_read_privileged_tools_keep_read_only_hints_true()
                 .collect(),
         ),
         None,
-    );
+    )
+    .with_sys_class_net(fixture_sys_class_net());
     let responses = roundtrip(
         server,
         &[
@@ -654,7 +666,8 @@ async fn call_privileged_default_disabled_returns_privileged_message() {
     // Default deployment: NETDIAG_ENABLE_PRIVILEGED unset → empty opt-in set.
     // Every privileged tool refuses with -32011, message mentions the env var.
     for tool in PRIVILEGED_TOOLS {
-        let server = NetdiagServer::new(CommandRunner::with_layers(None, &HashSet::new()), None);
+        let server = NetdiagServer::new(CommandRunner::with_layers(None, &HashSet::new()), None)
+            .with_sys_class_net(fixture_sys_class_net());
         let args = privileged_call_args(tool);
         let resp = handshake_then_call(server, tool, args).await;
         assert_eq!(
@@ -684,7 +697,8 @@ async fn call_privileged_subset_opts_in_only_listed_tool() {
     // the response is NOT a privileged refusal (status may be "ok" or "fail"
     // depending on host capabilities — the call reached past the gate).
     {
-        let server = NetdiagServer::new(CommandRunner::with_layers(None, &privileged), None);
+        let server = NetdiagServer::new(CommandRunner::with_layers(None, &privileged), None)
+            .with_sys_class_net(fixture_sys_class_net());
         let resp = handshake_then_call(
             server,
             "net.ping",
@@ -703,7 +717,8 @@ async fn call_privileged_subset_opts_in_only_listed_tool() {
 
     // The other five privileged tools still refuse with privileged message.
     for tool in PRIVILEGED_TOOLS.iter().filter(|t| **t != "net.ping") {
-        let server = NetdiagServer::new(CommandRunner::with_layers(None, &privileged), None);
+        let server = NetdiagServer::new(CommandRunner::with_layers(None, &privileged), None)
+            .with_sys_class_net(fixture_sys_class_net());
         let resp = handshake_then_call(server, tool, privileged_call_args(tool)).await;
         assert_eq!(rpc_error_code(&resp), -32011, "{tool} must still refuse");
         let msg = resp["error"]["message"].as_str().unwrap_or_default();
@@ -727,7 +742,8 @@ async fn call_privileged_all_sentinel_admits_every_privileged_tool() {
         .into_iter()
         .collect();
     for tool in PRIVILEGED_TOOLS {
-        let server = NetdiagServer::new(CommandRunner::with_layers(None, &privileged), None);
+        let server = NetdiagServer::new(CommandRunner::with_layers(None, &privileged), None)
+            .with_sys_class_net(fixture_sys_class_net());
         let resp = handshake_then_call(server, tool, privileged_call_args(tool)).await;
         if let Some(err) = resp.get("error") {
             let msg = err["message"].as_str().unwrap_or_default();
@@ -748,7 +764,8 @@ async fn call_privileged_allowlist_precedence_returns_command_not_allowed() {
     let privileged: HashSet<String> = [mcp_netdiag_rs::config::PRIVILEGED_ALL_SENTINEL.to_string()]
         .into_iter()
         .collect();
-    let server = NetdiagServer::new(CommandRunner::with_layers(Some(&allow), &privileged), None);
+    let server = NetdiagServer::new(CommandRunner::with_layers(Some(&allow), &privileged), None)
+        .with_sys_class_net(fixture_sys_class_net());
     let resp = handshake_then_call(
         server,
         "net.ping",
@@ -784,7 +801,8 @@ fn privileged_call_args(tool: &str) -> Value {
 async fn journal_records_tool_call_pairs_and_skips_lifecycle() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let journal = JournalWriter::open(tmp.path()).await.unwrap();
-    let server = NetdiagServer::new(StubRunner, Some(Arc::new(journal)));
+    let server = NetdiagServer::new(StubRunner, Some(Arc::new(journal)))
+        .with_sys_class_net(fixture_sys_class_net());
 
     roundtrip(
         server,
@@ -819,7 +837,8 @@ async fn journal_records_tool_call_pairs_and_skips_lifecycle() {
 async fn journal_records_pinned_error_code_for_failed_call() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let journal = JournalWriter::open(tmp.path()).await.unwrap();
-    let server = NetdiagServer::new(StubRunner, Some(Arc::new(journal)));
+    let server = NetdiagServer::new(StubRunner, Some(Arc::new(journal)))
+        .with_sys_class_net(fixture_sys_class_net());
 
     handshake_then_call(server, "net.mac_lookup", json!({"mac": "zz"})).await;
 
