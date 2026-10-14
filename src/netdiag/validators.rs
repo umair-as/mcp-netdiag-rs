@@ -10,11 +10,68 @@
 //! (a leading `-` would be parsed by the underlying command as a CLI option,
 //! breaking the "no arbitrary flags" guarantee).
 
+use std::path::Path;
+
 use crate::errors::NetdiagError;
 
-/// Validate an interface (or systemd unit) name token.
+/// Longest Linux interface name (`IFNAMSIZ - 1`).
+const IFNAME_MAX: usize = 15;
+
+/// Where the kernel lists real network devices.
+const SYS_CLASS_NET: &str = "/sys/class/net";
+
+/// Validate a network interface name token. On top of [`validate_token`],
+/// apply the kernel's own `dev_valid_name` rules: at most 15 bytes, not `.`
+/// or `..`, and no `:` or `/` (so the name is also safe as a single path
+/// component under `/sys/class/net`).
 pub fn validate_interface(value: &str) -> Result<(), NetdiagError> {
-    validate_token("interface", value)
+    validate_token("interface", value)?;
+    let invalid = |reason: &str| {
+        Err(NetdiagError::InvalidParam {
+            name: "interface".to_string(),
+            reason: reason.to_string(),
+        })
+    };
+    if value.len() > IFNAME_MAX {
+        return invalid("must be <= 15 chars (Linux IFNAMSIZ)");
+    }
+    if value == "." || value == ".." || value.contains([':', '/']) {
+        return invalid("is not a valid Linux interface name");
+    }
+    Ok(())
+}
+
+/// Validate the interface handed to `tcpdump -i`. tcpdump also accepts
+/// libpcap pseudo-devices (`any`, `nflog`, `nfqueue`, `dbus-system`,
+/// `dbus-session`, `bluetooth-monitor`, …) and bare numbers as indexes
+/// into `tcpdump -D`, which reach far beyond a network interface — e.g.
+/// eavesdropping on D-Bus or binding a netfilter queue. Only names of real
+/// network devices (present in `/sys/class/net`) are accepted.
+pub async fn validate_capture_interface(value: &str) -> Result<(), NetdiagError> {
+    check_capture_interface(value, Path::new(SYS_CLASS_NET)).await
+}
+
+/// [`validate_capture_interface`] against an arbitrary `sys_class_net`
+/// directory, so tests do not depend on the host's interfaces.
+async fn check_capture_interface(value: &str, sys_class_net: &Path) -> Result<(), NetdiagError> {
+    validate_interface(value)?;
+    let invalid = |reason: &str| {
+        Err(NetdiagError::InvalidParam {
+            name: "interface".to_string(),
+            reason: reason.to_string(),
+        })
+    };
+    if value.bytes().all(|b| b.is_ascii_digit()) {
+        return invalid("numeric interface indexes are not accepted; use the interface name");
+    }
+    // `validate_interface` guarantees `value` is one plain path component.
+    match tokio::fs::try_exists(sys_class_net.join(value)).await {
+        Ok(true) => Ok(()),
+        _ => invalid(
+            "not a network interface on this host (pseudo-devices such as `any`, \
+             `nflog` or `dbus-*` are not accepted)",
+        ),
+    }
 }
 
 /// Validate a systemd unit name token.
@@ -146,6 +203,40 @@ mod tests {
         assert_eq!(err.code(), -32010);
         assert!(validate_interface("-i").is_err());
         assert!(validate_interface("--reset").is_err());
+    }
+
+    #[test]
+    fn validate_interface_applies_kernel_name_rules() {
+        assert!(validate_interface("enp0s31f6").is_ok());
+        assert!(validate_interface("eth0.100").is_ok());
+        assert!(validate_interface("a23456789012345").is_ok()); // 15 = IFNAMSIZ-1
+        assert!(validate_interface("a234567890123456").is_err());
+        assert!(validate_interface(".").is_err());
+        assert!(validate_interface("..").is_err());
+        assert!(validate_interface("eth0:1").is_err());
+        assert!(validate_interface("../lo").is_err());
+    }
+
+    #[tokio::test]
+    async fn capture_interface_must_exist_in_sys_class_net() {
+        let sys = tempfile::tempdir().unwrap();
+        std::fs::create_dir(sys.path().join("eth0")).unwrap();
+        assert!(check_capture_interface("eth0", sys.path()).await.is_ok());
+        for pseudo in ["any", "nflog", "nfqueue", "dbus-system", "dbus-session"] {
+            let err = check_capture_interface(pseudo, sys.path())
+                .await
+                .unwrap_err();
+            assert_eq!(err.code(), -32010, "{pseudo} must be rejected");
+        }
+    }
+
+    #[tokio::test]
+    async fn capture_interface_rejects_numeric_index() {
+        // `tcpdump -i 2` picks entry 2 of `tcpdump -D` (often `any`). Reject
+        // all-digit names even if such a device happened to exist.
+        let sys = tempfile::tempdir().unwrap();
+        std::fs::create_dir(sys.path().join("2")).unwrap();
+        assert!(check_capture_interface("2", sys.path()).await.is_err());
     }
 
     #[test]

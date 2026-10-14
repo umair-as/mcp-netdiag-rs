@@ -321,10 +321,38 @@ async fn call_net_tcpdump_sample_rejects_out_of_range_count() {
     let resp = handshake_then_call(
         stub_server(),
         "net.tcpdump_sample",
-        json!({"interface": "eth0", "count": 500}),
+        // `lo` exists on every Linux host, so only the count can fail.
+        json!({"interface": "lo", "count": 500}),
     )
     .await;
     assert_eq!(rpc_error_code(&resp), -32010);
+}
+
+#[tokio::test]
+async fn call_net_tcpdump_sample_rejects_pseudo_devices_and_indexes() {
+    // libpcap pseudo-devices and `tcpdump -D` indexes reach beyond network
+    // interfaces (D-Bus, netfilter queues); only /sys/class/net names pass.
+    for iface in [
+        "any",
+        "nflog",
+        "nfqueue",
+        "dbus-session",
+        "dbus-system",
+        "1",
+        "2",
+    ] {
+        let resp = handshake_then_call(
+            stub_server(),
+            "net.tcpdump_sample",
+            json!({"interface": iface, "count": 1}),
+        )
+        .await;
+        assert_eq!(
+            rpc_error_code(&resp),
+            -32010,
+            "interface {iface:?} must be rejected"
+        );
+    }
 }
 
 // ---- tools/call: error paths ---------------------------------------------

@@ -48,12 +48,20 @@ add programs or arguments. See CLAUDE.md §6.
 ### 2. Per-token validators
 
 Every caller-supplied token passes a typed validator in
-`src/netdiag/commands.rs`:
+`src/netdiag/validators.rs`:
 
 - `validate_interface` / `validate_unit` / `validate_ip_or_host` —
   non-empty, ≤ 128 chars, restricted character class
   (`[A-Za-z0-9.:_/-]`, plus `@` for unit names), and **must not start
   with `-`** (argv-flag-injection guard; see PR #3).
+- `validate_interface` additionally applies the kernel's interface-name
+  rules: ≤ 15 chars (`IFNAMSIZ - 1`), not `.` / `..`, no `:` or `/`.
+- `validate_capture_interface` (`net.tcpdump_sample` only) further
+  requires the name to exist under `/sys/class/net` and not be all
+  digits. `tcpdump -i` otherwise also accepts libpcap pseudo-devices
+  (`any`, `nflog`, `nfqueue`, `dbus-system`, `dbus-session`,
+  `bluetooth-monitor`, …) and numeric indexes into `tcpdump -D`, which
+  would let a caller eavesdrop on D-Bus or bind a netfilter queue.
 - `validate_mac` — strict `aa:bb:cc:dd:ee:ff` shape, case-insensitive.
 
 Integer bounds (`count`, `timeout_secs`, `max_hops`, `lines`) are

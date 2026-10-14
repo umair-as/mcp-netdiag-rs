@@ -30,7 +30,8 @@ use tracing::instrument;
 
 use crate::errors::NetdiagError;
 use crate::netdiag::validators::{
-    validate_interface, validate_ip_or_host, validate_mac, validate_unit,
+    validate_capture_interface, validate_interface, validate_ip_or_host, validate_mac,
+    validate_unit,
 };
 use crate::netdiag::{normalize_tool_result, CommandExecutor};
 use journal::{JournalEntry, JournalWriter};
@@ -479,7 +480,7 @@ impl<R: CommandExecutor> NetdiagServer<R> {
         params: Parameters<TcpdumpParams>,
     ) -> Result<CallToolResult, McpError> {
         let Parameters(p) = params;
-        validate_interface(&p.interface)?;
+        validate_capture_interface(&p.interface).await?;
         let count = bounded(p.count, "count", 1, 50)?.unwrap_or(10);
         let extra = vec![
             "-i".to_string(),
