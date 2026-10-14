@@ -45,3 +45,27 @@ jobs:
       # Build the example sub-crate too, so it cannot silently rot.
       - name: Build example client
         run: cargo build --locked --manifest-path examples/minimal-mcp-client/Cargo.toml
+
+  # Builds on the declared MSRV (Cargo.toml `rust-version`) so a dependency
+  # bump that raises it fails here instead of silently breaking the promise.
+  msrv:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          # Keep in sync with `rust-version` in Cargo.toml.
+          toolchain: "1.88.0"
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Check on MSRV
+        run: cargo check --locked --all-targets
+
+      - name: Check example client on MSRV
+        run: cargo check --locked --manifest-path examples/minimal-mcp-client/Cargo.toml

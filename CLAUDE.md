@@ -12,7 +12,7 @@ The MCP protocol layer is the `rmcp` SDK over its stdio transport (§7).
 
 | Topic | Decision | Notes |
 |---|---|---|
-| Language | Rust, edition 2021 | MSRV 1.85 (required by `rmcp` 1.7's edition-2024 dependency chain). |
+| Language | Rust, edition 2021 | MSRV 1.88 (`rmcp-macros` → `darling` 0.23 requires it). Change `rust-version` in Cargo.toml AND the `msrv` job's toolchain in ci.yml together. |
 | Async runtime | **tokio** (multi-thread) | All I/O is async; no blocking calls on the stdio loop. |
 | Error strategy | **thiserror** typed errors → MCP codes / structured results | NOT `anyhow` — typed variants are required. |
 | MCP transport | **`rmcp` SDK over stdio** | The SDK owns `initialize`, `tools/list`, `tools/call`, `notifications/initialized`. The netdiag domain stays separate (§3). |
@@ -37,7 +37,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 libc = "0.2"
-rmcp = { version = "1.7", features = ["transport-io"] }
+rmcp = { version = "1.8", features = ["transport-io"] }
 schemars = "1.0"
 ```
 
@@ -217,7 +217,8 @@ cargo build --locked --release
 cargo build --locked --manifest-path examples/minimal-mcp-client/Cargo.toml
 ```
 
-All five must pass before reporting a task done.
+All five must pass before reporting a task done. CI also checks the MSRV
+(`cargo +1.88.0 check --locked --all-targets`, plus the example client).
 
 ## 10  Do NOT
 
