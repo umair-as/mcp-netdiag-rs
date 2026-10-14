@@ -221,7 +221,7 @@ impl<R: CommandExecutor> NetdiagServer<R> {
     /// Route lookup for a specific target (`ip -j route get <target>`).
     #[tool(
         name = "net.route_get",
-        description = "Resolve the route the kernel would use for a target host.",
+        description = "Resolve the route the kernel would use for a target IP address.",
         annotations(
             read_only_hint = true,
             destructive_hint = false,

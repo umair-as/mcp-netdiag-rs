@@ -169,9 +169,14 @@ All configuration is via environment variables — there is no config file.
 
 `NETDIAG_ALLOWLIST` keys are the tool names without their `net.`/`sys.`
 prefix (`routes`, `service_status`, …), except `net.mac_lookup`, whose key
-is `mac_table`; unknown keys enable nothing. In `NETDIAG_ENABLE_PRIVILEGED`,
-`all` anywhere in the list enables every privileged tool (`ping,all` is the
-same as `all`).
+is `mac_table`. Unknown keys are ignored, so `NETDIAG_ALLOWLIST=mac_lookup`
+silently disables `net.mac_lookup`, and a list of only unknown keys
+disables every tool. `all` is not an allowlist key — leave the variable
+unset to enable everything.
+
+In `NETDIAG_ENABLE_PRIVILEGED`, `all` anywhere in the list enables every
+privileged tool (`ping,all` is the same as `all`), whereas `none` is only
+recognised as the whole value (`ping,none` enables `ping`).
 
 ## 🏗️ How it works
 
