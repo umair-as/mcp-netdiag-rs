@@ -1,6 +1,6 @@
 [package]
 name = "mcp-netdiag-rs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 description = "Stateless MCP server exposing read-only Linux network and system diagnostics over stdio."
