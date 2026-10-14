@@ -169,8 +169,9 @@ All configuration is via environment variables — there is no config file.
 
 `NETDIAG_ALLOWLIST` keys are the tool names without their `net.`/`sys.`
 prefix (`routes`, `service_status`, …), except `net.mac_lookup`, whose key
-is `mac_table`. Unknown keys are ignored, so `NETDIAG_ALLOWLIST=mac_lookup`
-silently disables `net.mac_lookup`, and a list of only unknown keys
+is `mac_table`. Unknown keys are ignored, so
+`NETDIAG_ALLOWLIST=routes,mac_lookup` enables only `net.routes`
+(`net.mac_lookup` is silently lost), and a list of only unknown keys
 disables every tool. `all` is not an allowlist key — leave the variable
 unset to enable everything.
 
