@@ -24,7 +24,9 @@ allow = [
 
 [bans]
 multiple-versions = "warn"
-wildcards = "allow"
+# Reject `*` version requirements so every dependency is pinned to a
+# semver range that Cargo.lock and Dependabot can reason about.
+wildcards = "deny"
 
 [sources]
 unknown-registry = "deny"
