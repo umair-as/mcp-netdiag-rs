@@ -5,8 +5,14 @@
 //! One line per [`JournalEntry`]; each `tools/call` produces a `call` row
 //! before dispatch and a `result` row after. Per CLAUDE.md §6 this is
 //! always-on auditing — not opt-in — but I/O failures degrade gracefully
-//! (logged via `tracing::warn`, the journal handle becomes `None`) so a
+//! (logged via `tracing::error`, the journal handle becomes `None`) so a
 //! missing or unwritable journal never blocks tool execution.
+//!
+//! The open is hardened against a pre-planted path: `O_NOFOLLOW` refuses a
+//! symlink, `O_NONBLOCK` stops a FIFO with no reader from hanging startup,
+//! and the opened fd must be a regular file owned by the server's effective
+//! uid. New files are created 0600 and a newly created parent directory
+//! 0700.
 //!
 //! mcp-netdiag-rs is **stateless** — there is no session concept — so the
 //! `session_id` field is fixed to [`JournalEntry::NO_SESSION`]. It is kept
@@ -15,6 +21,7 @@
 //! Time format: ISO 8601 UTC with millisecond precision. Hand-rolled
 //! rather than pulling in a date crate.
 
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -26,7 +33,7 @@ use serde_json::{json, Value};
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::Mutex as TokioMutex;
-use tracing::warn;
+use tracing::{error, warn};
 
 /// One row in the journal. `summary` is tool-specific and kept small.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,12 +73,33 @@ pub struct JournalWriter {
 }
 
 impl JournalWriter {
-    /// Open `path` in create+append mode.
+    /// Open `path` in create+append mode, refusing anything another user
+    /// could have planted: a symlink, a non-regular file (FIFO, device,
+    /// directory), or a file — or freshly-defaulted parent directory — not
+    /// owned by the server's effective uid.
     pub async fn open(path: &Path) -> std::io::Result<Self> {
+        // SAFETY: geteuid() has no preconditions and cannot fail.
+        let euid = unsafe { libc::geteuid() };
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            prepare_parent(parent, euid).await?;
+        }
         let file = OpenOptions::new()
             .create(true)
             .append(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
             .open(path)
+            .await?;
+        // fstat the fd, not the path, so a swap after open cannot fool it.
+        let meta = file.metadata().await?;
+        if !meta.is_file() {
+            return Err(unsafe_path("journal path is not a regular file"));
+        }
+        if meta.uid() != euid {
+            return Err(unsafe_path("journal file is owned by another user"));
+        }
+        // Narrow a pre-existing file we own (e.g. a 0644 v0.1.0 journal).
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
             .await?;
         Ok(Self {
             inner: TokioMutex::new(BufWriter::new(file)),
@@ -89,7 +117,7 @@ impl JournalWriter {
                 Some(Arc::new(w))
             }
             Err(e) => {
-                warn!(
+                error!(
                     error = %e,
                     path = %path.display(),
                     "journal open failed — continuing in degraded mode (no auditing)"
@@ -125,6 +153,36 @@ impl JournalWriter {
             warn!(error = %e, path = %self.path.display(), "journal flush failed");
         }
     }
+}
+
+/// Create the journal's parent directory (0700) if missing. A directory
+/// that already exists is left alone unless it is the per-uid `/tmp`
+/// fallback ([`crate::config::journal_tmp_fallback_dir`]), which sits in a
+/// world-writable parent and so must be ours and private.
+async fn prepare_parent(parent: &Path, euid: u32) -> std::io::Result<()> {
+    match tokio::fs::symlink_metadata(parent).await {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tokio::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)
+                .await
+        }
+        Err(e) => Err(e),
+        Ok(meta) if parent == crate::config::journal_tmp_fallback_dir(euid) => {
+            if !meta.is_dir() || meta.uid() != euid || meta.mode() & 0o077 != 0 {
+                return Err(unsafe_path(
+                    "journal directory under /tmp is not a private directory owned by this user",
+                ));
+            }
+            Ok(())
+        }
+        Ok(_) => Ok(()),
+    }
+}
+
+fn unsafe_path(msg: &'static str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::PermissionDenied, msg)
 }
 
 /// Shape the `summary` payload for a `call` row. netdiag tool arguments are
@@ -203,6 +261,7 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
     use rmcp::model::ErrorCode;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
     #[test]
     fn iso8601_epoch_renders_zero() {
@@ -278,6 +337,73 @@ mod tests {
         assert_eq!(parsed.direction, "call");
         assert_eq!(parsed.session_id, "none");
         assert!(parsed.ts.ends_with('Z'));
+    }
+
+    #[tokio::test]
+    async fn open_creates_file_0600() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state").join("journal.jsonl");
+        JournalWriter::open(&path).await.unwrap();
+        let file_mode = std::fs::metadata(&path).unwrap().mode() & 0o777;
+        let dir_mode = std::fs::metadata(path.parent().unwrap()).unwrap().mode() & 0o777;
+        assert_eq!(file_mode, 0o600);
+        assert_eq!(dir_mode, 0o700);
+    }
+
+    #[tokio::test]
+    async fn open_narrows_existing_world_readable_file() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+        JournalWriter::open(tmp.path()).await.unwrap();
+        assert_eq!(std::fs::metadata(tmp.path()).unwrap().mode() & 0o777, 0o600);
+    }
+
+    #[tokio::test]
+    async fn open_refuses_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("victim");
+        std::fs::write(&target, b"keep").unwrap();
+        let link = dir.path().join("journal.jsonl");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(JournalWriter::open(&link).await.is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+    }
+
+    #[tokio::test]
+    async fn open_refuses_fifo_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("journal.jsonl");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let res = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            JournalWriter::open(&fifo),
+        )
+        .await
+        .expect("open on a reader-less FIFO must not block");
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn prepare_parent_refuses_non_private_tmp_fallback() {
+        // Models another user pre-creating the per-uid /tmp fallback dir.
+        // Uses an unused fake euid so the real fallback dir is untouched.
+        let fake_euid = 4_000_000_000;
+        let dir = crate::config::journal_tmp_fallback_dir(fake_euid);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let res = prepare_parent(&dir, fake_euid).await;
+        std::fs::remove_dir(&dir).unwrap();
+        // 0755 and (for our real uid) wrong owner: both must refuse.
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn open_refuses_non_regular_file() {
+        assert!(JournalWriter::open(Path::new("/dev/null")).await.is_err());
     }
 
     #[tokio::test]

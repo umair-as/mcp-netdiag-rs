@@ -252,7 +252,21 @@ carries `status: "fail"` rather than the protocol returning an error.
 
 Every `tools/call` writes one `call` row and one `result` row to the
 JSONL journal at `NETDIAG_JOURNAL` (default
-`/tmp/mcp-netdiag-journal.jsonl`). Lifecycle traffic
+`$XDG_STATE_HOME/mcp-netdiag-rs/journal.jsonl`, else
+`~/.local/state/mcp-netdiag-rs/journal.jsonl`, else
+`/tmp/mcp-netdiag-rs-<euid>/journal.jsonl` when `HOME` is unset).
+
+The journal is opened with `O_NOFOLLOW | O_NONBLOCK`, created mode
+0600 (a missing parent directory is created 0700), and the opened fd
+must be a regular file owned by the server's effective uid; a
+pre-existing file the server owns is narrowed to 0600. The per-uid
+`/tmp` fallback directory must be owned by the server's user with no
+group/other permission bits. Any failure leaves the server running in
+degraded mode with an `error`-level log on stderr — so a host that
+hides stderr should set `NETDIAG_JOURNAL` explicitly and check it.
+v0.1.0's `/tmp/mcp-netdiag-journal.jsonl` is not migrated.
+
+Lifecycle traffic
 (`initialize`, `tools/list`) is not journaled. Refused calls — both
 `CommandNotAllowed` and `PrivilegedDisabled` — are captured with their
 pinned error code in the result row, so a privileged attempt against a

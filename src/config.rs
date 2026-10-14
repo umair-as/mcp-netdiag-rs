@@ -13,6 +13,7 @@
 //!   elevated Linux capabilities or have on-wire side effects ([`privileged_enabled`])
 
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -45,18 +46,72 @@ pub fn default_timeout() -> Duration {
 }
 
 /// Env var pointing at the JSONL audit journal file. The journal is
-/// always-on; an unwritable path degrades to a `tracing::warn` and the
-/// server continues without auditing rather than failing to start.
+/// always-on; an unwritable or unsafe path (symlink, non-regular file, not
+/// owned by the server's user) degrades to a `tracing::error` and the server
+/// continues without auditing rather than failing to start.
 pub const JOURNAL_ENV: &str = "NETDIAG_JOURNAL";
 
-/// Default journal path when [`JOURNAL_ENV`] is unset.
-pub const DEFAULT_JOURNAL_PATH: &str = "/tmp/mcp-netdiag-journal.jsonl";
+/// Journal file name inside the per-user state directory.
+const JOURNAL_FILE: &str = "journal.jsonl";
 
-/// Resolve the journal path: [`JOURNAL_ENV`] if set, else the default.
+/// Per-user directory name under `$XDG_STATE_HOME` / `~/.local/state`.
+const JOURNAL_STATE_DIR: &str = "mcp-netdiag-rs";
+
+/// Resolve the journal path from the process environment. See
+/// [`resolve_journal_path`] for the precedence order.
 pub fn journal_path() -> PathBuf {
-    std::env::var(JOURNAL_ENV)
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from(DEFAULT_JOURNAL_PATH))
+    resolve_journal_path(
+        std::env::var_os(JOURNAL_ENV),
+        std::env::var_os("XDG_STATE_HOME"),
+        std::env::var_os("HOME"),
+        // SAFETY: geteuid() has no preconditions and cannot fail.
+        unsafe { libc::geteuid() },
+    )
+}
+
+/// Pure journal-path resolver (no env access) so it is unit testable
+/// without racing other tests on the process environment. Precedence:
+///
+/// 1. [`JOURNAL_ENV`], verbatim.
+/// 2. `$XDG_STATE_HOME/mcp-netdiag-rs/journal.jsonl` (absolute values only,
+///    per the XDG spec).
+/// 3. `$HOME/.local/state/mcp-netdiag-rs/journal.jsonl`.
+/// 4. `/tmp/mcp-netdiag-rs-<euid>/journal.jsonl` — for hosts that spawn the
+///    server without `HOME` (e.g. a systemd unit without `User=`). The
+///    journal writer creates that directory 0700 and refuses it if another
+///    user got there first.
+///
+/// Never a CWD-relative path: MCP hosts typically spawn stdio servers with
+/// CWD set to whatever project is open, so a relative default would scatter
+/// audit rows into unrelated repositories.
+pub fn resolve_journal_path(
+    env: Option<OsString>,
+    xdg_state_home: Option<OsString>,
+    home: Option<OsString>,
+    euid: u32,
+) -> PathBuf {
+    if let Some(p) = env.filter(|p| !p.is_empty()) {
+        return PathBuf::from(p);
+    }
+    let absolute = |v: Option<OsString>| v.map(PathBuf::from).filter(|p| p.is_absolute());
+    if let Some(state) = absolute(xdg_state_home) {
+        return state.join(JOURNAL_STATE_DIR).join(JOURNAL_FILE);
+    }
+    if let Some(home) = absolute(home) {
+        return home
+            .join(".local")
+            .join("state")
+            .join(JOURNAL_STATE_DIR)
+            .join(JOURNAL_FILE);
+    }
+    journal_tmp_fallback_dir(euid).join(JOURNAL_FILE)
+}
+
+/// The per-uid `/tmp` fallback directory used when `HOME` is unset. It sits
+/// in a world-writable parent, so the journal writer requires it to be a
+/// private directory owned by `euid`.
+pub fn journal_tmp_fallback_dir(euid: u32) -> PathBuf {
+    PathBuf::from(format!("/tmp/{JOURNAL_STATE_DIR}-{euid}"))
 }
 
 /// Env var that narrows the set of runnable command keys.
@@ -261,12 +316,41 @@ mod tests {
     }
 
     #[test]
-    fn journal_path_defaults_when_env_unset() {
-        // Don't set the env var — that would race other tests. Exercising
-        // the default branch is the safe assertion here.
-        unsafe {
-            std::env::remove_var(JOURNAL_ENV);
-        }
-        assert_eq!(journal_path(), PathBuf::from(DEFAULT_JOURNAL_PATH));
+    fn journal_path_env_wins() {
+        let p = resolve_journal_path(
+            Some("/var/log/nd.jsonl".into()),
+            Some("/state".into()),
+            Some("/home/u".into()),
+            1000,
+        );
+        assert_eq!(p, PathBuf::from("/var/log/nd.jsonl"));
+    }
+
+    #[test]
+    fn journal_path_prefers_xdg_state_home() {
+        let p = resolve_journal_path(None, Some("/state".into()), Some("/home/u".into()), 1000);
+        assert_eq!(p, PathBuf::from("/state/mcp-netdiag-rs/journal.jsonl"));
+    }
+
+    #[test]
+    fn journal_path_falls_back_to_home_local_state() {
+        // Empty env and a relative XDG_STATE_HOME are both ignored.
+        let p = resolve_journal_path(
+            Some("".into()),
+            Some("relative/state".into()),
+            Some("/home/u".into()),
+            1000,
+        );
+        assert_eq!(
+            p,
+            PathBuf::from("/home/u/.local/state/mcp-netdiag-rs/journal.jsonl")
+        );
+    }
+
+    #[test]
+    fn journal_path_without_home_uses_per_uid_tmp_dir() {
+        let p = resolve_journal_path(None, None, None, 0);
+        assert_eq!(p, PathBuf::from("/tmp/mcp-netdiag-rs-0/journal.jsonl"));
+        assert!(p.is_absolute(), "default must never be CWD-relative");
     }
 }

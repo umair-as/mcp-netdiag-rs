@@ -18,6 +18,8 @@ tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
+# O_NOFOLLOW / geteuid() for the audit-journal open (see mcp/journal.rs).
+libc = "0.2"
 # MCP protocol layer. Default features already include `macros` (for
 # #[tool], #[tool_router], #[tool_handler]) and `server`; `transport-io`
 # is enabled for the stdio transport.

@@ -422,6 +422,7 @@ name = "mcp-netdiag-rs"
 version = "0.1.0"
 dependencies = [
  "assert_matches",
+ "libc",
  "rmcp",
  "schemars",
  "serde",

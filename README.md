@@ -164,7 +164,7 @@ All configuration is via environment variables — there is no config file.
 | --- | --- | --- |
 | `NETDIAG_ENABLE_PRIVILEGED` | Opt-in for the six 🔒 tools. Comma-separated subset of `{ping, traceroute, tcpdump_sample, firewall, conntrack, dmesg}`, the literal `all`, or `none`/empty. **Case-sensitive.** Composes with `NETDIAG_ALLOWLIST` by AND. | unset → all refused |
 | `NETDIAG_ALLOWLIST` | Comma-separated subset of built-in command keys. When set, only those run. **Narrowing only** — can disable built-ins, never add programs or arguments. | unset → all enabled |
-| `NETDIAG_JOURNAL` | Path to the JSONL tool-call audit journal. Always-on; an unwritable path degrades to a warning and the server keeps running without auditing. | `/tmp/mcp-netdiag-journal.jsonl` |
+| `NETDIAG_JOURNAL` | Path to the JSONL tool-call audit journal (created 0600; symlinks and files owned by other users are refused). Always-on; an unwritable or unsafe path degrades to an error log and the server keeps running without auditing. | `$XDG_STATE_HOME/mcp-netdiag-rs/journal.jsonl`, else `~/.local/state/mcp-netdiag-rs/journal.jsonl` |
 | `RUST_LOG` | `tracing` filter. Logs go to **stderr only**, never stdout. | `mcp_netdiag_rs=info` |
 
 ## 🏗️ How it works
