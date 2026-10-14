@@ -12,6 +12,7 @@
 //! it never adds programs or arguments.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,6 +36,17 @@ pub struct CommandSpec {
     pub program: &'static str,
     pub base_args: &'static [&'static str],
 }
+
+/// The only directories a [`CommandSpec::program`] is looked up in, in
+/// order. The caller's `PATH` is never consulted, so a writable directory
+/// early in it (e.g. `~/.local/bin`) cannot shadow `ip` — which matters when
+/// the server runs with ambient capabilities that children inherit. Also the
+/// `PATH` children see, after the environment is cleared.
+pub const SAFE_PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin";
+
+/// Locale for every child: deterministic, untranslated output, still
+/// UTF-8-clean for journal/log text. Falls back to `C` where absent.
+const CHILD_LOCALE: &str = "C.UTF-8";
 
 /// A pinned diagnostic operation.
 #[derive(Debug, Clone)]
@@ -328,7 +340,18 @@ impl CommandRunner {
         spec: &CommandSpec,
         extra_args: &[String],
     ) -> Result<Value, NetdiagError> {
-        let mut cmd = Command::new(spec.program);
+        let program =
+            resolve_program(spec.program)
+                .await
+                .ok_or_else(|| NetdiagError::CommandExec {
+                    message: format!("spawn failed: `{}` not found in {SAFE_PATH}", spec.program),
+                })?;
+        let mut cmd = Command::new(program);
+        // Start children from an empty environment: nothing from the MCP
+        // host (DBUS_SESSION_BUS_ADDRESS, LD_PRELOAD, proxies, ...) leaks in.
+        cmd.env_clear()
+            .env("PATH", SAFE_PATH)
+            .env("LC_ALL", CHILD_LOCALE);
         cmd.args(spec.base_args);
         cmd.args(extra_args);
         cmd.stdin(Stdio::null())
@@ -423,6 +446,22 @@ impl CommandExecutor for CommandRunner {
         check_privileged(key, &self.privileged_enabled)?;
         self.run_spec(&spec, extra).await
     }
+}
+
+/// Find `program` as an executable regular file in the first [`SAFE_PATH`]
+/// directory that has it. `program` is a `'static` allowlist name, never
+/// caller input.
+async fn resolve_program(program: &str) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    for dir in SAFE_PATH.split(':') {
+        let candidate = Path::new(dir).join(program);
+        if let Ok(meta) = tokio::fs::metadata(&candidate).await {
+            if meta.is_file() && meta.permissions().mode() & 0o111 != 0 {
+                return Some(candidate);
+            }
+        }
+    }
+    None
 }
 
 /// Pure privileged gating check: `Ok(())` if `key` is not privileged, or if the
@@ -550,6 +589,48 @@ mod tests {
         }
         // One run over the limit forces a second 0.3 s round.
         assert!(start.elapsed() >= Duration::from_millis(600));
+    }
+
+    #[tokio::test]
+    async fn resolve_program_uses_fixed_dirs_only() {
+        let sh = resolve_program("sh")
+            .await
+            .expect("sh is in a SAFE_PATH dir");
+        assert!(SAFE_PATH.split(':').any(|d| sh.starts_with(d)));
+        assert!(resolve_program("definitely-not-a-netdiag-program")
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn children_ignore_caller_path_and_environment() {
+        // A planted `ip` earlier in PATH and an inherited secret must not
+        // reach the child. Mutating the process env is safe here: no other
+        // test in this crate reads PATH or NETDIAG_TEST_SECRET.
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("sh");
+        std::fs::write(&fake, "#!/bin/sh\necho planted\n").unwrap();
+        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let old_path = std::env::var_os("PATH").unwrap_or_default();
+        unsafe {
+            std::env::set_var(
+                "PATH",
+                format!("{}:{}", dir.path().display(), old_path.to_string_lossy()),
+            );
+            std::env::set_var("NETDIAG_TEST_SECRET", "leak");
+        }
+        let runner = CommandRunner::with_enabled(None);
+        let spec = CommandSpec {
+            program: "sh",
+            base_args: &["-c", "echo \"$PATH|$LC_ALL|${NETDIAG_TEST_SECRET:-unset}\""],
+        };
+        let v = runner.run_process(&spec, &[]).await.unwrap();
+        unsafe {
+            std::env::set_var("PATH", old_path);
+            std::env::remove_var("NETDIAG_TEST_SECRET");
+        }
+        assert_eq!(v["stdout"], format!("{SAFE_PATH}|{CHILD_LOCALE}|unset"));
     }
 
     #[test]

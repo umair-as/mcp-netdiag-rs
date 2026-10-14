@@ -63,10 +63,20 @@ advertised in the `schemars` input schema.
 ### 3. No shell
 
 Every command runs via `tokio::process::Command::new(program).args(...)`.
-There is no `sh -c`, no string interpolation, no environment
-inheritance beyond what tokio's default does. Shell metacharacters in
+There is no `sh -c` and no string interpolation. Shell metacharacters in
 inputs are blocked by the validators above, but even if a token slipped
 through, the absence of a shell means it cannot do anything.
+
+Programs are resolved only in the fixed directories
+`/usr/sbin:/usr/bin:/sbin:/bin` (`SAFE_PATH` in `commands.rs`); the
+caller's `PATH` is ignored, so a writable directory such as
+`~/.local/bin` cannot shadow `ip` — important when the server is given
+ambient capabilities (e.g. systemd `AmbientCapabilities=`) that children
+inherit. Children start from an empty environment with only
+`PATH=SAFE_PATH` and `LC_ALL=C.UTF-8`, so nothing from the MCP host
+(`LD_PRELOAD`, `DBUS_SESSION_BUS_ADDRESS`, proxy settings, …) reaches
+them. Tools installed elsewhere (e.g. `/usr/local/sbin`, NixOS profiles)
+are reported as not found.
 
 ### 4. Bounded execution
 

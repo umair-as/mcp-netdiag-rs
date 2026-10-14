@@ -167,6 +167,9 @@ pub const JOURNAL_HEAD_CHARS: usize = 128;  // audit-journal summary cap
 - All commands run under a wall-clock timeout; output is byte- and
   line-bounded while it is read (excess is drained, never buffered), and
   at most `MAX_CONCURRENT_COMMANDS` run at once.
+- Programs are resolved only in `SAFE_PATH` (`/usr/sbin:/usr/bin:/sbin:/bin`),
+  never via the caller's `PATH`; children get a cleared environment
+  (`PATH=SAFE_PATH`, `LC_ALL=C.UTF-8` only).
 
 **Environment variables:**
 
