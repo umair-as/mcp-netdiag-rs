@@ -48,7 +48,8 @@ schemars = "1.0"
 Deliberately absent: `toml` (no device-profile file — netdiag has no
 per-device config), `regex` (validators are hand-rolled char-class
 checks), `tokio-serial`. `libc` is a direct dependency only for the
-audit journal's `O_NOFOLLOW` open and `geteuid()` owner check. No new
+audit journal's hardened open (`O_NOFOLLOW`, `O_NONBLOCK`, `ELOOP`/`ENXIO`
+classification) and `geteuid()` owner check. No new
 runtime dependencies without approval.
 
 ## 3  Module map

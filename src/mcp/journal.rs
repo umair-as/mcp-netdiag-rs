@@ -115,9 +115,9 @@ impl JournalWriter {
     }
 
     /// Try each candidate in order (see [`crate::config::journal_paths`])
-    /// and keep the first that opens. Failures before the last candidate
-    /// log at warn; if every candidate fails, log at error and return
-    /// `None` (degraded mode).
+    /// and keep the first that opens. A candidate refused as unsafe logs at
+    /// error, any other failure before the last candidate at warn; if every
+    /// candidate fails, log at error and return `None` (degraded mode).
     pub async fn try_open_first(paths: &[PathBuf]) -> Option<Arc<Self>> {
         for (i, path) in paths.iter().enumerate() {
             match Self::open(path).await {
@@ -220,7 +220,9 @@ async fn prepare_parent(parent: &Path, euid: u32, strict_dir: &Path) -> std::io:
 /// True for errors that mean "refused as unsafe" rather than "unavailable":
 /// our own ownership/type checks, or `O_NOFOLLOW` hitting a symlink.
 fn is_refusal(e: &std::io::Error) -> bool {
-    e.raw_os_error() == Some(libc::ELOOP)
+    // ELOOP: O_NOFOLLOW hit a symlink. ENXIO: O_NONBLOCK open of a FIFO with
+    // no reader — a non-regular file, like the `!is_file()` refusal.
+    matches!(e.raw_os_error(), Some(libc::ELOOP) | Some(libc::ENXIO))
         || (e.kind() == std::io::ErrorKind::PermissionDenied && e.raw_os_error().is_none())
 }
 
@@ -408,12 +410,13 @@ mod tests {
         std::fs::write(&target, b"keep").unwrap();
         let link = dir.path().join("journal.jsonl");
         std::os::unix::fs::symlink(&target, &link).unwrap();
-        assert!(JournalWriter::open(&link).await.is_err());
+        let err = JournalWriter::open(&link).await.unwrap_err();
+        assert!(is_refusal(&err), "{err}");
         assert_eq!(std::fs::read(&target).unwrap(), b"keep");
     }
 
-    #[tokio::test]
-    async fn open_refuses_fifo_without_blocking() {
+    #[test]
+    fn open_refuses_fifo_without_blocking() {
         let dir = tempfile::tempdir().unwrap();
         let fifo = dir.path().join("journal.jsonl");
         let status = std::process::Command::new("mkfifo")
@@ -421,13 +424,24 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
-        let res = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            JournalWriter::open(&fifo),
-        )
-        .await
-        .expect("open on a reader-less FIFO must not block");
-        assert!(res.is_err());
+        // Open on a separate OS thread with its own runtime: if O_NONBLOCK
+        // regressed, the open would block forever, and a tokio timeout
+        // cannot cancel a blocking-pool thread — the test binary would hang
+        // instead of failing.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = fifo.clone();
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let _ = tx.send(rt.block_on(JournalWriter::open(&path)).map(|_| ()));
+        });
+        let res = rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("open on a reader-less FIFO must not block");
+        let err = res.unwrap_err();
+        assert!(is_refusal(&err), "{err}");
     }
 
     #[tokio::test]
@@ -460,6 +474,8 @@ mod tests {
         assert!(prepare_parent(&link, euid, &link).await.is_err(), "symlink");
         let file = tmp.path().join("file");
         std::fs::write(&file, b"").unwrap();
+        // 0600 so only the is_dir check can refuse it.
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert!(prepare_parent(&file, euid, &file).await.is_err(), "file");
         // A private dir owned by someone else (modelled with another euid).
         assert!(
