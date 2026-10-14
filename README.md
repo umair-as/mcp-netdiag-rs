@@ -164,7 +164,7 @@ All configuration is via environment variables — there is no config file.
 | --- | --- | --- |
 | `NETDIAG_ENABLE_PRIVILEGED` | Opt-in for the six 🔒 tools. Comma-separated subset of `{ping, traceroute, tcpdump_sample, firewall, conntrack, dmesg}`, the literal `all`, or `none`/empty. **Case-sensitive.** Composes with `NETDIAG_ALLOWLIST` by AND. | unset → all refused |
 | `NETDIAG_ALLOWLIST` | Comma-separated subset of built-in command keys. When set, only those run. **Narrowing only** — can disable built-ins, never add programs or arguments. | unset → all enabled |
-| `NETDIAG_JOURNAL` | Path to the JSONL tool-call audit journal. Always-on; an unwritable path degrades to a warning and the server keeps running without auditing. | `/tmp/mcp-netdiag-journal.jsonl` |
+| `NETDIAG_JOURNAL` | Path to the JSONL tool-call audit journal (created 0600; a symlink at the journal path, or a file owned by another user, is refused). Always-on; if no candidate can be opened the server logs an error and keeps running without auditing. Empty = use the defaults. | `$XDG_STATE_HOME/mcp-netdiag-rs/journal.jsonl`, else `~/.local/state/mcp-netdiag-rs/journal.jsonl`; falls back to `/tmp/mcp-netdiag-rs-<euid>/` if that is unwritable |
 | `RUST_LOG` | `tracing` filter. Logs go to **stderr only**, never stdout. | `mcp_netdiag_rs=info` |
 
 `NETDIAG_ALLOWLIST` keys are the tool names without their `net.`/`sys.`

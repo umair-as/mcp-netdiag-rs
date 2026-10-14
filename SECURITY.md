@@ -239,6 +239,9 @@ ExecStart=/usr/local/bin/mcp-netdiag-rs
 User=netdiag
 DynamicUser=true
 NoNewPrivileges=true
+# DynamicUser implies a read-only /var; LogsDirectory= gives the dynamic
+# user a writable, owned /var/log/mcp-netdiag on every start.
+LogsDirectory=mcp-netdiag
 Environment=NETDIAG_JOURNAL=/var/log/mcp-netdiag/journal.jsonl
 # NETDIAG_ENABLE_PRIVILEGED is unset → privileged tools refused
 StandardInput=socket
@@ -264,6 +267,7 @@ NoNewPrivileges=true
 AmbientCapabilities=CAP_NET_RAW
 CapabilityBoundingSet=CAP_NET_RAW
 Environment=NETDIAG_ENABLE_PRIVILEGED=ping,traceroute
+LogsDirectory=mcp-netdiag
 Environment=NETDIAG_JOURNAL=/var/log/mcp-netdiag/journal.jsonl
 ```
 
@@ -302,7 +306,26 @@ If this matters for a deployment, leave `ping` and `traceroute` out of
 
 Every `tools/call` writes one `call` row and one `result` row to the
 JSONL journal at `NETDIAG_JOURNAL` (default
-`/tmp/mcp-netdiag-journal.jsonl`). Lifecycle traffic
+`$XDG_STATE_HOME/mcp-netdiag-rs/journal.jsonl`, else
+`~/.local/state/mcp-netdiag-rs/journal.jsonl`; if `HOME` is unset or
+that path cannot be opened — e.g. root on a read-only rootfs — the
+server falls back to `/tmp/mcp-netdiag-rs-<euid>/journal.jsonl`). An
+explicit `NETDIAG_JOURNAL` is the only candidate and never falls back.
+
+The journal is opened with `O_NOFOLLOW | O_NONBLOCK`, created mode
+0600 (a missing parent directory is created 0700), and the opened fd
+must be a regular file owned by the server's effective uid; a
+pre-existing file the server owns is narrowed to 0600. The per-uid
+`/tmp` fallback directory must be owned by the server's user with no
+group/other permission bits. A path refused as unsafe (symlink, wrong
+owner or type) is logged at `error` even when a fallback takes over; if
+every candidate fails, the server runs in degraded mode (no auditing)
+with an `error`-level log on stderr — so a host that hides stderr should
+set `NETDIAG_JOURNAL` explicitly and check it. An empty
+`NETDIAG_JOURNAL` means "use the defaults".
+v0.1.0's `/tmp/mcp-netdiag-journal.jsonl` is not migrated.
+
+Lifecycle traffic
 (`initialize`, `tools/list`) is not journaled. Refused calls — both
 `CommandNotAllowed` and `PrivilegedDisabled` — are captured with their
 pinned error code in the result row, so a privileged attempt against a
