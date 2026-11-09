@@ -2,6 +2,9 @@
 
 > Status: design doc — not yet implemented. Sequenced after the progress +
 > cancellation work. Tracks the planned MCP resource surface for netdiag.
+>
+> SDK details below were written against `rmcp` 1.7. Recheck them against the
+> current `rmcp` 3.x API and MCP `2026-07-28` before implementing.
 
 ## Why
 

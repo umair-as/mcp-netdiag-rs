@@ -326,7 +326,7 @@ set `NETDIAG_JOURNAL` explicitly and check it. An empty
 v0.1.0's `/tmp/mcp-netdiag-journal.jsonl` is not migrated.
 
 Lifecycle traffic
-(`initialize`, `tools/list`) is not journaled. Refused calls — both
+(`initialize`, `server/discover`, `tools/list`) is not journaled. Refused calls — both
 `CommandNotAllowed` and `PrivilegedDisabled` — are captured with their
 pinned error code in the result row, so a privileged attempt against a
 default-closed deployment leaves a record.

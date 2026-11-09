@@ -194,8 +194,12 @@ MCP client ──stdio (JSON-RPC)──▶ rmcp SDK ──▶ NetdiagServer
 ```
 
 The MCP protocol layer is the [`rmcp`](https://crates.io/crates/rmcp) SDK over
-its stdio transport — it owns `initialize`, `tools/list`, `tools/call`, and
-the standard JSON-RPC errors. Tool input schemas are derived from typed
+its stdio transport. It speaks the stateless MCP `2026-07-28` lifecycle and the
+legacy `initialize` handshake for `2025-11-25` clients, and owns `tools/list`,
+`tools/call`, and the standard JSON-RPC errors. The `initialize` and
+`server/discover` results both carry `instructions` condensed from
+[AGENTS.md](AGENTS.md), and `2026-07-28` clients may cache `tools/list` for an
+hour. Tool input schemas are derived from typed
 parameter structs via `schemars`. The server is **stateless**: each call
 resolves a command, runs it, and returns — no sessions, no per-call state.
 `stdout` is reserved exclusively for MCP messages.

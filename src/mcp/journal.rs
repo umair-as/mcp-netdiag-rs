@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rmcp::model::CallToolResult;
+use rmcp::model::{CallToolResponse, CallToolResult};
 use rmcp::ErrorData;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -235,6 +235,17 @@ fn unsafe_path(msg: &'static str) -> std::io::Error {
 /// whole — no large-field clipping is needed on the call side.
 pub fn call_summary(args: &Value) -> Value {
     json!({ "args": args })
+}
+
+/// Name a non-complete tool response for its journal row, so no MCP result
+/// kind can pass through without an audit record.
+pub fn response_kind(response: &CallToolResponse) -> &'static str {
+    match response {
+        CallToolResponse::Complete(_) => "complete",
+        CallToolResponse::InputRequired(_) => "input_required",
+        CallToolResponse::Task(_) => "task",
+        _ => "unknown",
+    }
 }
 
 /// Shape the `summary` payload for a `result` row. Errors carry the pinned

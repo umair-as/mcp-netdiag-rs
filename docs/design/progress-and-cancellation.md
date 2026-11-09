@@ -3,6 +3,9 @@
 > Status: design doc — approved direction, not yet implemented. Tracks the
 > planned progress-notification + cancellation work for netdiag's
 > long-running tools.
+>
+> SDK details below were written against `rmcp` 1.7. Recheck them against the
+> current `rmcp` 3.x API and MCP `2026-07-28` before implementing.
 
 ## Why
 

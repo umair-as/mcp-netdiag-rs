@@ -1,9 +1,13 @@
 # MCP Conformance Findings
 
-Date: 2026-06-01
+Scope: review of `mcp-netdiag-rs` against the MCP tool model and the current
+implementation in `src/mcp`, `src/netdiag`, and tests. The findings were written
+against `2025-11-25`.
 
-Scope: review of `mcp-netdiag-rs` against the MCP `2025-11-25` tool model and
-the current implementation in `src/mcp`, `src/netdiag`, and tests.
+The server now runs on `rmcp` 3.x and speaks the stateless `2026-07-28`
+lifecycle (per-request `_meta`, `server/discover`) as well as the legacy
+`initialize` handshake. It sends `instructions` in both the `initialize` and
+`server/discover` results, and `tools/list` carries version-gated cache hints.
 
 ## Summary
 
@@ -191,7 +195,7 @@ Highest-value tools for progress/cancellation:
 - `net.firewall`
 - `sys.dmesg`
 
-Implementation should confirm exactly how `rmcp 1.7` exposes cancellation to
+Implementation should confirm exactly how `rmcp` 3.x exposes cancellation to
 tool handlers before committing to a local cancellation token design.
 
 ### 6. Prompts are missing
