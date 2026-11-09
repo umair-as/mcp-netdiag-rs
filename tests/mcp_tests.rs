@@ -23,8 +23,8 @@ use tokio::time::timeout;
 
 use mcp_netdiag_rs::errors::NetdiagError;
 use mcp_netdiag_rs::mcp::journal::JournalWriter;
-use mcp_netdiag_rs::mcp::NetdiagServer;
-use mcp_netdiag_rs::netdiag::commands::CommandRunner;
+use mcp_netdiag_rs::mcp::{NetdiagServer, SERVER_INSTRUCTIONS, TOOLS_LIST_TTL_MS};
+use mcp_netdiag_rs::netdiag::commands::{CommandRunner, PRIVILEGED_KEYS};
 use mcp_netdiag_rs::netdiag::CommandExecutor;
 
 // ---- helpers --------------------------------------------------------------
@@ -128,6 +128,21 @@ fn call_request(id: i64, tool: &str, arguments: Value) -> Value {
         "method": "tools/call",
         "params": {"name": tool, "arguments": arguments},
     })
+}
+
+/// `_meta` keys a 2026-07-28 client sends on every request.
+fn stateless_meta() -> Value {
+    json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {"name": "mcp-tests", "version": "0.0.1"},
+        "io.modelcontextprotocol/clientCapabilities": {},
+    })
+}
+
+/// A stateless (2026-07-28) request: no `initialize`, inline `_meta`.
+fn stateless_request(id: i64, method: &str, mut params: Value) -> Value {
+    params["_meta"] = stateless_meta();
+    json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
 }
 
 /// Handshake + a single `tools/call`; returns the call response.
@@ -831,6 +846,131 @@ async fn journal_records_tool_call_pairs_and_skips_lifecycle() {
     assert_eq!(rows[1]["direction"], "result");
     assert_eq!(rows[1]["summary"]["ok"], true);
     assert_eq!(rows[1]["summary"]["status"], "ok");
+}
+
+#[tokio::test]
+async fn legacy_initialize_negotiates_and_carries_instructions() {
+    let responses = roundtrip(stub_server(), &[init_request()]).await;
+    let result = &responses[0]["result"];
+    assert_eq!(result["protocolVersion"], "2025-11-25");
+    assert_eq!(result["instructions"], SERVER_INSTRUCTIONS);
+    for needle in ["net.if_status", "NETDIAG_ENABLE_PRIVILEGED", "untrusted"] {
+        assert!(
+            SERVER_INSTRUCTIONS.contains(needle),
+            "instructions should mention `{needle}`"
+        );
+    }
+}
+
+#[test]
+fn instructions_name_every_privileged_tool() {
+    for key in PRIVILEGED_KEYS {
+        assert!(
+            SERVER_INSTRUCTIONS.contains(key),
+            "instructions should name the privileged tool for `{key}`"
+        );
+    }
+}
+
+#[tokio::test]
+async fn legacy_tools_list_omits_cache_hints() {
+    let responses = roundtrip(
+        stub_server(),
+        &[
+            init_request(),
+            initialized_notification(),
+            json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+        ],
+    )
+    .await;
+    let result = &responses[1]["result"];
+    assert!(result.get("ttlMs").is_none(), "{result}");
+    assert!(result.get("cacheScope").is_none(), "{result}");
+}
+
+#[tokio::test]
+async fn stateless_discover_advertises_versions_tools_and_instructions() {
+    let responses = roundtrip(
+        stub_server(),
+        &[stateless_request(1, "server/discover", json!({}))],
+    )
+    .await;
+    let result = &responses[0]["result"];
+    let versions = result["supportedVersions"]
+        .as_array()
+        .expect("supportedVersions");
+    for v in ["2026-07-28", "2025-11-25"] {
+        assert!(
+            versions.iter().any(|x| x == v),
+            "missing {v} in {versions:?}"
+        );
+    }
+    assert!(result["capabilities"].get("tools").is_some(), "{result}");
+    assert_eq!(result["instructions"], SERVER_INSTRUCTIONS);
+    assert_eq!(
+        result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"],
+        "mcp-netdiag-rs"
+    );
+}
+
+#[tokio::test]
+async fn stateless_tools_list_without_initialize_carries_cache_hints() {
+    let responses = roundtrip(
+        stub_server(),
+        &[
+            stateless_request(1, "tools/list", json!({})),
+            stateless_request(2, "tools/list", json!({})),
+        ],
+    )
+    .await;
+    let result = &responses[0]["result"];
+    assert_eq!(result["ttlMs"], TOOLS_LIST_TTL_MS);
+    assert_eq!(result["cacheScope"], "public");
+    let names: Vec<&str> = result["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .map(|t| t["name"].as_str().expect("name"))
+        .collect();
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    assert_eq!(names, sorted, "cacheable list must be sorted");
+    assert_eq!(names.len(), 24, "{names:?}");
+    assert_eq!(responses[1]["result"]["tools"], result["tools"]);
+}
+
+#[tokio::test]
+async fn stateless_tools_call_runs_without_initialize_and_is_journaled() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let journal = JournalWriter::open(tmp.path()).await.unwrap();
+    let server = NetdiagServer::new(StubRunner, Some(Arc::new(journal)))
+        .with_sys_class_net(fixture_sys_class_net());
+
+    let responses = roundtrip(
+        server,
+        &[stateless_request(
+            1,
+            "tools/call",
+            json!({"name": "net.routes", "arguments": {}}),
+        )],
+    )
+    .await;
+    let result = &responses[0]["result"];
+    assert_eq!(
+        result["structuredContent"]["tool"], "net.routes",
+        "{result}"
+    );
+    assert_ne!(result["isError"], true);
+
+    let contents = std::fs::read_to_string(tmp.path()).unwrap();
+    assert_eq!(contents.lines().count(), 2, "{contents}");
+}
+
+#[tokio::test]
+async fn stateless_request_without_meta_is_a_protocol_error() {
+    let responses = roundtrip(stub_server(), &[call_request(1, "net.routes", json!({}))]).await;
+    assert!(responses[0].get("error").is_some(), "{:?}", responses[0]);
+    assert!(responses[0].get("result").is_none());
 }
 
 #[tokio::test]

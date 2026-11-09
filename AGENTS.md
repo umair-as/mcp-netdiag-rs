@@ -7,6 +7,11 @@ through MCP tools. It is a narrow, stateless observation capability — it
 reports on a host's network stack, it does not configure or repair it. No
 tool edits a route, mutates a unit, or writes a file.
 
+A condensed copy of this guide is also delivered over the wire as the MCP
+server `instructions` (`initialize` / `server/discover`), so a host that only
+installs the binary receives it. The source of that copy is
+`mcp::SERVER_INSTRUCTIONS` in `src/mcp/mod.rs`; keep the two in sync.
+
 ## Safe Workflow
 
 1. Start broad, then narrow. A typical reachability triage is

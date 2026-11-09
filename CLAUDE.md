@@ -12,10 +12,10 @@ The MCP protocol layer is the `rmcp` SDK over its stdio transport (§7).
 
 | Topic | Decision | Notes |
 |---|---|---|
-| Language | Rust, edition 2021 | MSRV 1.88 (`rmcp-macros` → `darling` 0.23 requires it). Change `rust-version` in Cargo.toml AND the `msrv` job's toolchain in ci.yml together. |
+| Language | Rust, edition 2021 | MSRV 1.88 (`rmcp` 3.x and `darling` require it; `resolver = "3"` keeps `uuid` on a compatible release). Change `rust-version` in Cargo.toml AND the `msrv` job's toolchain in ci.yml together. |
 | Async runtime | **tokio** (multi-thread) | All I/O is async; no blocking calls on the stdio loop. |
 | Error strategy | **thiserror** typed errors → MCP codes / structured results | NOT `anyhow` — typed variants are required. |
-| MCP transport | **`rmcp` SDK over stdio** | The SDK owns `initialize`, `tools/list`, `tools/call`, `notifications/initialized`. The netdiag domain stays separate (§3). |
+| MCP transport | **`rmcp` 3.x SDK over stdio** | The SDK owns the stateless MCP `2026-07-28` lifecycle, the legacy `initialize` handshake for `2025-11-25` clients, `tools/list`, and `tools/call`. The netdiag domain stays separate (§3). |
 | Logging | **tracing** + **tracing-subscriber** (env-filter, stderr writer) | `rmcp::transport::stdio()` does NOT redirect logs — stderr setup is mandatory. |
 | Serialisation | **serde** + **serde_json** + **schemars** | Tool params are typed structs; rmcp generates input schemas from them; results use `structuredContent`. |
 | **State** | **Stateless** | netdiag tools are fire-and-forget. There is NO session concept — no `session_id`, no session manager, no per-call state. This is load-bearing (see §5). |
@@ -37,7 +37,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 libc = "0.2"
-rmcp = { version = "1.8", features = ["transport-io"] }
+rmcp = { version = "3.9", features = ["transport-io"] }
 schemars = "1.0"
 ```
 
@@ -136,7 +136,8 @@ opt-in.
   with `isError: true`, not a JSON-RPC `-32602`.
 - Privileged source of truth: `PRIVILEGED_KEYS` in `src/netdiag/commands.rs`. If
   you add or remove a privileged tool, update that constant AND the §6
-  env-var table AND SECURITY.md's privileged-tools table.
+  env-var table AND SECURITY.md's privileged-tools table AND
+  `SERVER_INSTRUCTIONS` (a wire test checks the last one).
 
 ## 5  Statelessness
 
@@ -193,6 +194,11 @@ pub const JOURNAL_HEAD_CHARS: usize = 128;  // audit-journal summary cap
   exception is the `--version`/`-V` fast path in `main.rs`, which prints one
   line to stdout and exits *before* any MCP session begins.
 - **Logs go to stderr only**, via `tracing`, driven by `RUST_LOG`.
+- **Server instructions:** `mcp::SERVER_INSTRUCTIONS` is the machine-delivered
+  copy of `AGENTS.md`, sent in the `initialize` and `server/discover` results.
+  When you change the guidance in one, mirror it in the other.
+- **`tools/list`** is static and advertised as cacheable for one hour to
+  `2026-07-28` clients (`TOOLS_LIST_TTL_MS`); keep that true.
 - The audit journal is scoped to `tools/call` only (one `call` row + one
   `result` row). Lifecycle traffic is not journaled — it never enters the
   `call_tool` hook point.

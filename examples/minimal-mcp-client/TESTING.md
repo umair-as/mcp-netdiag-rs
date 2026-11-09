@@ -72,8 +72,8 @@ Expected: an ELF binary built for the host's architecture.
 
 ### 5.2 Run one direct MCP exchange on the host
 
-The server uses the rmcp SDK, which requires the `initialize` handshake
-before any `tools/call`:
+This example uses the legacy `initialize` handshake, which the server still
+accepts for `2025-11-25` clients:
 
 ```bash
 ssh <host> "printf '%s\n%s\n%s\n' \

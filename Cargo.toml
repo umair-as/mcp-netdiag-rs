@@ -6,11 +6,13 @@ license = "MIT OR Apache-2.0"
 description = "Stateless MCP server exposing read-only Linux network and system diagnostics over stdio."
 repository = "https://github.com/umair-as/mcp-netdiag-rs"
 readme = "README.md"
-# MSRV is set by the dependency tree, not this crate: rmcp-macros (>= 1.7)
-# depends on darling 0.23, whose rust-version is 1.88. The earlier 1.85 was
-# never accurate for the locked tree. Edition 2021 is retained for this
+# MSRV is set by the dependency tree, not this crate: rmcp 3.x and its
+# darling dependency need 1.88. Edition 2021 is retained for this
 # crate. Keep in sync with the `msrv` job's toolchain in ci.yml.
 rust-version = "1.88"
+# MSRV-aware resolution: rmcp 3.x allows `uuid` releases that need a newer
+# toolchain, and this keeps the lockfile on versions that build at 1.88.
+resolver = "3"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -24,7 +26,7 @@ libc = "0.2"
 # MCP protocol layer. Default features already include `macros` (for
 # #[tool], #[tool_router], #[tool_handler]) and `server`; `transport-io`
 # is enabled for the stdio transport.
-rmcp = { version = "1.8", features = ["transport-io"] }
+rmcp = { version = "3.9", features = ["transport-io"] }
 schemars = "1.0"
 
 [dev-dependencies]
